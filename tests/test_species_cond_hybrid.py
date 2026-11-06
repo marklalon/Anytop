@@ -134,15 +134,17 @@ class SpeciesHybridTest(unittest.TestCase):
         # concat([joint_emb, species_code]) in, (gamma_residual, beta) out.
         self.assertEqual(fused.input_process.species_film_j[0].in_features,
                          T5_DIM + T5_DIM + len(SPECIES_VARIANTS))
-        self.assertEqual(fused.input_process.species_film_j[0].out_features, 128)
-        self.assertEqual(fused.input_process.species_film_j[-1].in_features, 128)
+        self.assertEqual(fused.input_process.species_film_j[0].out_features, fused.latent_dim)
+        self.assertEqual(fused.input_process.species_film_j[-1].in_features, fused.latent_dim)
         self.assertEqual(fused.input_process.species_film_j[-1].out_features, 2 * T5_DIM)
 
-    def test_film_bottleneck_follows_the_flag(self):
-        model = _make_model(species_cond=True, species_film_bottleneck=64)
-        self.assertEqual(model.input_process.species_film_j[0].out_features, 64)
-        model = _make_model(species_cond=True, species_film_bottleneck=0)
-        self.assertEqual(model.input_process.species_film_j[0].out_features, 8)
+    def test_film_hidden_width_tracks_latent_dim(self):
+        for width in (8, 16, 32):
+            model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=width,
+                                    ff_size=32, num_layers=1, num_heads=2,
+                                    species_cond=True, t5_out_dim=T5_DIM)
+            self.assertEqual(model.input_process.species_film_j[0].out_features, width)
+            self.assertEqual(model.input_process.species_film_j[-1].in_features, width)
 
     def test_joint_cond_film_starts_at_identity(self):
         model = _make_model(species_cond=True)

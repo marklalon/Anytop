@@ -1005,7 +1005,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
-                 action_adaln_bottleneck=0, last_layer_ff=0,
+                 last_layer_ff=0,
                  graph_relations=True,
                  temporal_rope=False):
                 # multi head attention
@@ -1093,23 +1093,12 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # (d^2 + 4*L*d^2 against L*(d^2 + 4*d^2)) for one matmul instead of 2L,
         # which matters on a step that is partly kernel-launch bound.
         #
-        # --action_adaln_bottleneck: the hidden width of that head. Its input is
-        # the action token, so the head cannot use more directions than the
-        # rank of the action-label codes, whatever its width; a hidden at or
-        # above that rank loses nothing and shrinks the head, whose output
-        # Linear is the largest single matrix in the model. 0 keeps the hidden
-        # at d_model.
-        self.action_adaln_bottleneck = int(action_adaln_bottleneck)
-        if self.action_adaln_bottleneck < 0:
-            raise ValueError(
-                f"action_adaln_bottleneck must be >= 0, got {action_adaln_bottleneck}"
-            )
+        # The conditioning head uses the same width as the decoder.
         if action_label_adaln:
-            hidden = self.action_adaln_bottleneck or self.d_model
             self.action_adaln = nn.Sequential(
-                nn.Linear(self.d_model, hidden),
+                nn.Linear(self.d_model, self.d_model),
                 nn.SiLU(),
-                nn.Linear(hidden, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * self.d_model),
+                nn.Linear(self.d_model, num_layers * ACTION_ADALN_PARAMS_PER_LAYER * self.d_model),
             )
             # Zero-init: gamma = beta = 0 on a fresh model, so training starts
             # from exactly the unmodulated architecture and the head only ever

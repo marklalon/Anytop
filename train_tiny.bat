@@ -44,8 +44,6 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --last_layer_ff 256 ^
     --layers 8 ^
     --action_label_cond ^
-    --action_adaln_bottleneck 64 ^
-    --species_film_bottleneck 64 ^
     --species_cond ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^

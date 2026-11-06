@@ -31,7 +31,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 59
+CKPT_VERSION = 60
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -216,12 +216,6 @@ def add_model_options(parser):
                             "(0 = same as --ff_size). That layer feeds a single linear "
                             "readout, and in a full run ~3/4 of its FFN units went dead; "
                             "512 recovers those parameters for the trunk.")
-    group.add_argument("--action_adaln_bottleneck", default=0, type=int,
-                       help="Hidden width of the action-label AdaLN head (0 = latent_dim). "
-                            "Its output layer is the model's largest matrix; a width at or "
-                            "above the rank of the action-label codes loses nothing.")
-    group.add_argument("--species_film_bottleneck", default=128, type=int,
-                       help="Hidden width of the joint x species FiLM head (default 128; 0 = latent_dim).")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_drot", default=0.0, type=float,
                        help="Weight of target-relative global rotation-step loss: R[t]^T R[t+1], "

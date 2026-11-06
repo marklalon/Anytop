@@ -56,14 +56,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.temporal_rope=bool(kargs.get('temporal_rope', False))
-        # Hidden widths of conditioning heads; 0 selects latent_dim.
-        self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
-        self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 128))
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
-        if self.species_film_bottleneck < 0:
-            raise ValueError(
-                f"species_film_bottleneck must be >= 0, got {self.species_film_bottleneck}"
-            )
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
         # It is applied on every row, with no CFG drop or null mode of its own.
@@ -117,7 +110,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.input_process = InputProcess(
             self.input_feats, self.latent_dim, t5_out_dim,
             species_cond=self.species_cond,
-            species_film_bottleneck=self.species_film_bottleneck,
         )
         # y['is_loop'] (0/1, whether the window is a closed cycle) is NOT summed
         # into the condition embedding. It selects the loop time encoding
@@ -186,7 +178,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
                                                         cross_limb_dim=self.cross_limb_dim,
                                                         cross_limb_last_n=self.cross_limb_last_n,
                                                         action_label_adaln=self.action_label_adaln,
-                                                        action_adaln_bottleneck=self.action_adaln_bottleneck,
                                                         last_layer_ff=self.last_layer_ff,
                                                         temporal_rope=self.temporal_rope)
             
@@ -290,7 +281,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
     def __init__(self, input_feats, latent_dim, t5_output_dim,
-                 species_cond=False, species_film_bottleneck=128):
+                 species_cond=False):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -319,11 +310,10 @@ class InputProcess(nn.Module):
         #
         # The final linear is zero-initialized so the head starts at identity
         # (gamma=1, beta=0).
-        species_hidden = species_film_bottleneck or self.latent_dim
         self.species_film_j = nn.Sequential(
-            nn.Linear(t5_output_dim + species_code_dim(t5_output_dim), species_hidden),
+            nn.Linear(t5_output_dim + species_code_dim(t5_output_dim), self.latent_dim),
             nn.GELU(),
-            nn.Linear(species_hidden, 2 * t5_output_dim),
+            nn.Linear(self.latent_dim, 2 * t5_output_dim),
         ) if species_cond else None
         if self.species_film_j is not None:
             nn.init.zeros_(self.species_film_j[-1].weight)

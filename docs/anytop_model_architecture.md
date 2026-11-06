@@ -160,14 +160,14 @@ variant 是正交码（每个 variant 一根轴，取值为该 body plan 行的�
 
 ```text
 [joint_name_emb || species_code]
-  → Linear(D_t5 + D_code, bottleneck) → GELU → Linear(bottleneck, 2 * D_t5)
+  → Linear(D_t5 + D_code, latent_dim) → GELU → Linear(latent_dim, 2 * D_t5)
   → gamma_residual, beta
 
 modulated_name = (1 + gamma_residual) * joint_name_emb + beta
   → text_embedding → latent width
 ```
 
-隐藏宽度由 `species_film_bottleneck` 控制，设为 0 时使用 `latent_dim`。
+隐藏宽度固定为 `latent_dim`。
 最后一层权重和偏置初始化为零，因此初始调制为 identity。
 
 FiLM 在所有行上开启，没有独立的 CFG drop 或 null 模式。
@@ -197,9 +197,7 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 零初始化，驱动向量与加性路径共用，所以 CFG 的无条件分支自动走 null。
 设计细节见 [conditional_modulation_upgrade.md](conditional_modulation_upgrade.md) §3。
 
-`--action_adaln_bottleneck` 设这个头的隐层宽（0 表示使用 `latent_dim`）。它的输入是
-action token，而标签集的 slot-source 秩有限，头再宽也用不满，所以隐层可以远小于
-`latent_dim`，同时避免它成为模型里最大的单个矩阵。见 §11。
+这个头的隐藏宽度固定为 `latent_dim`。
 
 ### 4.3 输出空间与 resample speed
 
@@ -434,7 +432,7 @@ M 大于窗口时插值不可逆，仍用线性插值。
 ## 11. 宽度分配与设计依据
 
 参数预算由训练配置（`train_all.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
-`last_layer_ff`、`action_adaln_bottleneck`、`species_film_bottleneck`。冻结的 T5 词表以 buffer 形式保存，
+`last_layer_ff`。action AdaLN 和 species FiLM 的隐藏宽度均固定为 `latent_dim`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
@@ -447,9 +445,6 @@ M 大于窗口时插值不可逆，仍用线性插值。
   宽度没有余量，因此主干保持全宽。
 - **末层 FFN 坍缩**：末层 FFN 的单元增益远低于其它层，大量隐单元不参与。末层之后只有
   `LayerNorm → Linear` 的线性读出，不需要全宽 FFN，因此用 `last_layer_ff` 收窄。
-- **AdaLN 头的有效秩被标签集的秩封顶**：隐层不需要接近 `latent_dim`；窄隐层同时避免它成为
-  模型里最大的单个矩阵。
-- **species 描述子的秩远低于物种数**：per-joint FiLM 的隐层相应取窄。
 - **`action_label_projection` 只读紧凑通道**：direction 槽的正交码只占少数几个轴，其余列的输入
   恒为 0，是结构性死参数；投影只读 `compact_slot_channels`，不读完整槽宽。
 - **cross-limb**：proj 的有效秩接近瓶颈宽度，宽度用满。
