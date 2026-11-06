@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.fp16_util import GRAD_SCALER_MAX_SCALE, MixedPrecisionTrainer  # noqa: E402
-from model.anytop import run_in_fp32  # noqa: E402
+from model.motion_diffusion import run_in_fp32  # noqa: E402
 from model.reference_encoder import ReferenceEncoder  # noqa: E402
 from model.motion_transformer import CrossLimbTemporalBlock  # noqa: E402
 from data_loaders.reference import REFERENCE_POSE_CHANNELS  # noqa: E402

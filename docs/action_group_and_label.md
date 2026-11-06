@@ -211,7 +211,7 @@ timestep_emb += token
 
 ### 5.7 建模型时的硬门
 
-只对模型**改不回来**的性质设硬门（`model/anytop.py`）：
+只对模型**改不回来**的性质设硬门（`model/motion_diffusion.py`）：
 
 1. **每槽源满秩**：不同成员集合的归一化和不可能相同，且存在线性读出能判定每个词是否在槽内，覆盖解析器允许的**全部**合法组合（含上限 8 词），不只是语料见过的。
 2. **`latent_dim` ≥ 各槽源总秩**：否则投影层在可达条件空间上不可能单射。
@@ -382,12 +382,12 @@ out = out_uncond + s * (out_cond - out_uncond)
 |---|---|
 | 词表、解析、规范拼写、sidecar 加载与校验、phase-free 白名单 | [`motion_labels.py`](../data_loaders/truebones/truebones_utils/motion_labels.py) |
 | 槽分配、权重、合成码、指纹、秩报告 | [`action_label_conditioning_contract.py`](../data_loaders/truebones/truebones_utils/action_label_conditioning_contract.py) |
-| 槽拼装、dropout、null、投影 | [`model/anytop.py`](../model/anytop.py)（`_action_condition` / `_build_action_label_token`） |
+| 槽拼装、dropout、null、投影 | [`model/motion_diffusion.py`](../model/motion_diffusion.py)（`_action_condition` / `_build_action_label_token`） |
 | AdaLN 头 | [`model/motion_transformer.py`](../model/motion_transformer.py) |
 | 推理 CFG | [`model/cfg_sampler.py`](../model/cfg_sampler.py) |
 | 采样权重（稀有词） | [`dataset.py`](../data_loaders/truebones/data/dataset.py)（`rare_head_word_boost` / `parse_head_word_weights`） |
 | 标签解析与改写、loop auto | [`sample/conditioning.py`](../sample/conditioning.py)、[`sample/generate.py`](../sample/generate.py) |
-| 训练的 group 记录与续训守卫 | [`train_anytop.py`](../train/train_anytop.py)（`assert_resume_keeps_action_group`）、[`sample_filter.py`](../data_loaders/truebones/truebones_utils/sample_filter.py)（`record_sample_selection`）；推理不读取 group |
+| 训练的 group 记录与续训守卫 | [`train_motion_diffusion.py`](../train/train_motion_diffusion.py)（`assert_resume_keeps_action_group`）、[`sample_filter.py`](../data_loaders/truebones/truebones_utils/sample_filter.py)（`record_sample_selection`）；推理不读取 group |
 | 服务端路由 | [`server/anytop_service.py`](../../server/anytop_service.py) |
 | 片长先验 | [`utils/clip_length_prior.py`](../utils/clip_length_prior.py) |
 | 评测参考先验 | [`eval/motion_quality/reference_bank.py`](../eval/motion_quality/reference_bank.py) |

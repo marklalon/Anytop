@@ -210,7 +210,7 @@ def test_cli_defaults_to_all_and_rejects_removed_flags(monkeypatch):
 
 
 def test_train_and_validation_default_to_all_without_inheriting_group(monkeypatch):
-    from train import train_anytop as training
+    from train import train_motion_diffusion as training
     from train import training_loop
     from utils.parser_util import train_args
     monkeypatch.setattr(sys, 'argv', ['train', '--cond_path', 'cond.npy'])
@@ -265,7 +265,7 @@ def test_real_loader_matches_legacy_flags_and_honours_the_config_file(monkeypatc
 
 
 def test_training_records_derived_group_and_refuses_changed_resume_before_overwrite(tmp_path, monkeypatch, dataset):
-    from train import train_anytop as training
+    from train import train_motion_diffusion as training
     from utils.parser_util import train_args
     source_cond = tmp_path / 'cond.npy'
     source_cond.write_bytes(b'fixture')

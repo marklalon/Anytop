@@ -26,7 +26,7 @@ from utils.model_util import (
     bind_checkpoint_action_conditioning,
     build_checkpoint_payload,
     load_checkpoint_weights,
-    unwrap_anytop_model,
+    unwrap_motion_diffusion_model,
 )
 import random
 from data_loaders.get_data import get_dataset_loader
@@ -337,7 +337,7 @@ class TrainLoop:
         symbolic-shape graph that gives up the shape-specialised fusions. The
         only other shape that could vary is a trailing partial batch (drop_last
         is always True, avoiding the one extra compile). The numpy/.item()
-        conditioning in AnyTop.forward triggers graph breaks, but the heavy
+        conditioning in MotionDiffusion.forward triggers graph breaks, but the heavy
         decoder region between breaks still compiles and fuses.
         """
         try:
@@ -427,7 +427,7 @@ class TrainLoop:
         buffer-level half is bind_checkpoint_action_conditioning, which can only
         run once those buffers ARE the checkpoint's.
         """
-        if not getattr(unwrap_anytop_model(self.model), 'action_label_cond', False):
+        if not getattr(unwrap_motion_diffusion_model(self.model), 'action_label_cond', False):
             return
         action_conditioning = (metadata or {}).get('action_conditioning') or {}
         bundle = getattr(self.args, 'action_conditioning', None)
@@ -535,7 +535,7 @@ class TrainLoop:
 
 
 
-    # Read only by the host-side joint-mask sampler (AnyTop.sample_subtree_joint_mask_train):
+    # Read only by the host-side joint-mask sampler (MotionDiffusion.sample_subtree_joint_mask_train):
     # moving it to the device just to read it back cost a stream sync per step.
     HOST_ONLY_COND_KEYS = ('joint_mask_limb_roots',)
 
@@ -687,7 +687,7 @@ class TrainLoop:
         and unweighted (the caller draws ``t`` stratified-uniform, which needs
         no importance weights).
         """
-        ref_enabled = bool(getattr(unwrap_anytop_model(model), 'ref_encoder', False))
+        ref_enabled = bool(getattr(unwrap_motion_diffusion_model(model), 'ref_encoder', False))
         null_cond = cond
         if ref_enabled:
             null_cond = dict(cond, y=dict(cond['y'], ref_active=torch.zeros(

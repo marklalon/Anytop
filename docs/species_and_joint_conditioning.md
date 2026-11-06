@@ -6,7 +6,7 @@
 
 ## 1. 总览
 
-输入层 `InputProcess`（[anytop.py](../model/anytop.py)）为每个 `(帧, 关节)` 生成一个 latent token，由四部分相加：
+输入层 `InputProcess`（[motion_diffusion.py](../model/motion_diffusion.py)）为每个 `(帧, 关节)` 生成一个 latent token，由四部分相加：
 
 ```
 token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 为 rest pose 的投影
@@ -114,7 +114,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 | `--joint_name_drop_prob` | **整个关节**的名字行清零 | 训练模型在"不知道这是什么关节"时回退到 rest pose、graph 距离、关系矩阵与结构通道；防止某个罕见 token 单点翻转整条肢体的运动先验。无 1/(1−p) 缩放（被隐藏的行不是一个被稀疏化的向量） |
 | `--dropout_prob` | 名字向量**逐元素** | 常规正则，不改变关节身份 |
 
-整关节 drop 抽样在 `AnyTop._sample_joint_name_drop`，写成纯张量比较（无 `.any()` 分支），不破坏 compile / cudagraph；评估与推理从不 drop。
+整关节 drop 抽样在 `MotionDiffusion._sample_joint_name_drop`，写成纯张量比较（无 `.any()` 分支），不破坏 compile / cudagraph；评估与推理从不 drop。
 
 ---
 
@@ -211,7 +211,7 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 
 | 内容 | 位置 |
 |---|---|
-| 输入装配、FiLM、整关节 drop、species 激活逻辑 | [`model/anytop.py`](../model/anytop.py)（`InputProcess`、`AnyTop.forward` 的 species 激活、`_sample_joint_name_drop`） |
+| 输入装配、FiLM、整关节 drop、species 激活逻辑 | [`model/motion_diffusion.py`](../model/motion_diffusion.py)（`InputProcess`、`MotionDiffusion.forward` 的 species 激活、`_sample_joint_name_drop`） |
 | 描述符词表、`species_tags.jsonl` 读取与校验 | [`dataset_tags.py`](../data_loaders/truebones/truebones_utils/dataset_tags.py) |
 | 描述符表（构建、绑定、查表）、species code | [`species_descriptor_table.py`](../data_loaders/truebones/truebones_utils/species_descriptor_table.py) |
 | 关节名文本生成与 T5 烘焙、未见名字置空 | [`joint_embedding_text.py`](../data_loaders/truebones/truebones_utils/joint_embedding_text.py)、[`joint_name_canonical.py`](../data_loaders/truebones/truebones_utils/joint_name_canonical.py) |

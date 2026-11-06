@@ -183,7 +183,7 @@ def test_diffusion_loader_delegates_to_the_same_factory(monkeypatch):
 @pytest.mark.parametrize('is_loop', [False, True])
 @pytest.mark.parametrize('cycles', [1, 3])
 def test_physical_time_embedding_matches_old_diffusion(frames, is_loop, cycles):
-    from model.anytop import AnyTop
+    from model.motion_diffusion import MotionDiffusion
     model, _, _ = fixture(frames=frames)
     # Nonzero heads expose time semantics, including the K=1 30/90 distinction.
     model.tempo_projection = torch.nn.Identity()
@@ -192,8 +192,8 @@ def test_physical_time_embedding_matches_old_diffusion(frames, is_loop, cycles):
                     is_loop=torch.full((2,), is_loop), loop_tile_count=torch.full((2,), cycles))
     old = SimpleNamespace(latent_dim=model.width, tempo_projection=model.tempo_projection,
                           loop_period_projection=model.loop_period_projection)
-    old._coerce_resample_speed_cond = lambda raw, **kwargs: AnyTop._coerce_resample_speed_cond(old, raw, **kwargs)
-    expected = AnyTop._tempo_frame_embedding(old, metadata, 2, frames, torch.device('cpu'),
+    old._coerce_resample_speed_cond = lambda raw, **kwargs: MotionDiffusion._coerce_resample_speed_cond(old, raw, **kwargs)
+    expected = MotionDiffusion._tempo_frame_embedding(old, metadata, 2, frames, torch.device('cpu'),
                                             metadata['is_loop'], metadata['loop_tile_count'])
     actual = model._tempo_embedding(torch.ones(2, frames, dtype=torch.bool), metadata).squeeze(2)
     torch.testing.assert_close(actual, expected)

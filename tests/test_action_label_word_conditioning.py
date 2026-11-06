@@ -46,7 +46,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     T5_ENCODED_VOCAB,
     parse_action_label,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from utils.model_util import (  # noqa: E402
     bind_checkpoint_action_conditioning,
     build_checkpoint_payload,
@@ -65,9 +65,9 @@ from tests.action_label_test_utils import (  # noqa: E402
 def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
            action_label_cond=True, eval_mode=True, direction_drop_prob=0.0,
            modifier_drop_prob=0.0):
-    # AnyTop.train() drops nn.Module.train's return value, so .eval() cannot be
+    # MotionDiffusion.train() drops nn.Module.train's return value, so .eval() cannot be
     # chained onto the constructor here.
-    model = AnyTop(
+    model = MotionDiffusion(
         max_joints=4,
         feature_len=12,
         latent_dim=latent_dim,
@@ -400,7 +400,7 @@ def test_latent_dim_below_the_slot_source_rank_fails_at_construction():
 def test_word_table_from_another_encoder_is_refused():
     bundle = make_test_bundle()
     with pytest.raises(ValueError, match="t5_out_dim"):
-        AnyTop(
+        MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=TEST_T5_DIM // 2, action_label_cond=True,
@@ -422,7 +422,7 @@ def test_a_rank_deficient_word_table_is_refused_at_construction():
         flat, contract, source='flat', check_token_sources=False,
     )
     with pytest.raises(ValueError, match="full slot-source rank"):
-        AnyTop(
+        MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=384, action_label_cond=True, action_conditioning=bundle,

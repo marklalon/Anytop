@@ -360,7 +360,7 @@ def parser():
                    help='Training batches prepared ahead of the GPU; 0 selects 4')
     p.add_argument('--motion_cache_size', type=int, default=0)
     p.add_argument('--joint_buckets', type=int, nargs='+', default=None,
-                   help='Same joint-count ceilings as train_anytop; defaults to JOINT_BUCKETS')
+                   help='Same joint-count ceilings as train_motion_diffusion; defaults to JOINT_BUCKETS')
     p.add_argument('--width', type=int, default=128)
     p.add_argument('--encoder_width', type=int, default=None,
                    help='Encoder width; defaults to --width when unspecified')
@@ -581,7 +581,7 @@ def main():
     if resume is not None:
         tqdm.write(f'[INFO] Resuming {checkpoint} at completed step {start:,}/{args.num_steps:,}')
         tqdm.write('[INFO] Shared prefetch loader restarts its data stream on resume; '
-                   'worker RNGs and queued batches are not checkpointed (same as train_anytop).')
+                   'worker RNGs and queued batches are not checkpointed (same as train_motion_diffusion).')
     forward_model = model
     if args.compile != 'None':
         from utils.compile_util import configure_triton_c_compiler

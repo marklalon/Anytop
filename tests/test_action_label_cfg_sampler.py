@@ -23,7 +23,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
 )
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from model.cfg_sampler import ClassifierFreeActionModel  # noqa: E402
 from tests.action_label_test_utils import (  # noqa: E402
     TEST_LATENT_DIM,
@@ -62,7 +62,7 @@ class _TimestepEchoDecoder(torch.nn.Module):
 
 
 def _make_model():
-    return AnyTop(
+    return MotionDiffusion(
         max_joints=4,
         feature_len=12,
         latent_dim=TEST_LATENT_DIM,

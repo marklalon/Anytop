@@ -31,7 +31,7 @@ from diffusion.gaussian_diffusion import (  # noqa: E402
     ModelVarType,
 )
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from train.training_loop import (  # noqa: E402
     build_optimizer_param_groups,
     is_no_weight_decay_param,
@@ -41,7 +41,7 @@ from train.training_loop import (  # noqa: E402
 B, J, F_, NFEATS = 2, 4, 3, 12
 
 
-def _small_model(seed: int = 0, **overrides) -> AnyTop:
+def _small_model(seed: int = 0, **overrides) -> MotionDiffusion:
     torch.manual_seed(seed)
     kwargs = dict(
         max_joints=J,
@@ -56,7 +56,7 @@ def _small_model(seed: int = 0, **overrides) -> AnyTop:
         cross_limb_dim=8,
     )
     kwargs.update(overrides)
-    model = AnyTop(**kwargs)
+    model = MotionDiffusion(**kwargs)
     model.eval()
     return model
 

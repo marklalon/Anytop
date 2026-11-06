@@ -11,7 +11,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from model.anytop import AnyTop
+from model.motion_diffusion import MotionDiffusion
 from model.cfg_sampler import ClassifierFreeReferenceModel
 from data_loaders.reference import (
     REST_GEOM_DIM,
@@ -27,7 +27,7 @@ from test_bone_length_aug import fixture, make_dataset, pin_target_leaf_drop
 
 
 def model(**kwargs):
-    return AnyTop(8, 12, latent_dim=16, ff_size=32, num_layers=2, num_heads=4,
+    return MotionDiffusion(8, 12, latent_dim=16, ff_size=32, num_layers=2, num_heads=4,
                   t5_out_dim=4, dropout=0, cross_limb=True, ref_encoder=True,
                   ref_width=8, **kwargs)
 

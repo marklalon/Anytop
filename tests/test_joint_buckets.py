@@ -37,7 +37,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     JOINT_BUCKETS,
     MAX_JOINTS,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 
 
 class ResolveBucketsTest(unittest.TestCase):
@@ -217,7 +217,7 @@ class PaddingInvarianceTest(unittest.TestCase):
 
     def _model(self):
         torch.manual_seed(0)
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=100, feature_len=FEATS, latent_dim=16, ff_size=32, num_layers=2,
             num_heads=2, dropout=0.0, cross_limb=True, cross_limb_latents=3,
             cross_limb_dim=8, t5_out_dim=T5,

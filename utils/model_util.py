@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model.anytop import AnyTop
+from model.motion_diffusion import MotionDiffusion
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_CHECKPOINT_VERSION,
     CONTROLLED_VOCAB,
@@ -58,9 +58,9 @@ def resolve_t5_out_dim(args, cond_source: str | Path | dict | None = None) -> in
     )
 
 
-def unwrap_anytop_model(model):
+def unwrap_motion_diffusion_model(model):
     unwrapped_model = model
-    while hasattr(unwrapped_model, 'model') and not isinstance(unwrapped_model, AnyTop):
+    while hasattr(unwrapped_model, 'model') and not isinstance(unwrapped_model, MotionDiffusion):
         next_model = getattr(unwrapped_model, 'model')
         if next_model is None or next_model is unwrapped_model:
             break
@@ -100,7 +100,7 @@ def build_checkpoint_payload(model_state_dict, model_avg_state_dict, model):
     sync instead of simply being written once per save.
     """
     action_conditioning = getattr(
-        unwrap_anytop_model(model), 'action_conditioning_metadata', None
+        unwrap_motion_diffusion_model(model), 'action_conditioning_metadata', None
     )
     return {
         'model': model_state_dict,
@@ -201,7 +201,7 @@ def load_checkpoint_weights(payload, source: str, prefer_ema: bool, align_vocab:
 
 def bind_checkpoint_action_conditioning(model, metadata, source: str):
     """Certify the loaded weights against the contract they were trained under."""
-    unwrapped = unwrap_anytop_model(model)
+    unwrapped = unwrap_motion_diffusion_model(model)
     if not getattr(unwrapped, 'action_label_cond', False):
         return None
     action_conditioning = (metadata or {}).get('action_conditioning')
@@ -213,7 +213,7 @@ def bind_checkpoint_action_conditioning(model, metadata, source: str):
     return unwrapped.validate_loaded_action_conditioning(action_conditioning, source)
 
 def create_model_and_diffusion_general_skeleton(args):
-    model = AnyTop(**get_gmdm_args(args))
+    model = MotionDiffusion(**get_gmdm_args(args))
     diffusion = create_gaussian_diffusion(args)
     return model, diffusion
 

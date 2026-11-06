@@ -19,7 +19,7 @@ from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 
 
 T5_DIM = 512
@@ -55,7 +55,7 @@ class _ProbeHead(torch.nn.Module):
 
 
 def _make_model(species_cond=False, **extra):
-    return AnyTop(
+    return MotionDiffusion(
         max_joints=4,
         feature_len=12,
         latent_dim=8,
@@ -71,7 +71,7 @@ def _make_model(species_cond=False, **extra):
 
 
 def _joint_cond_inputs(batch=1, joints=4, frames=3):
-    """Shapes InputProcess is called with from AnyTop.forward."""
+    """Shapes InputProcess is called with from MotionDiffusion.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
         torch.randn(batch, joints, REST_GEOM_DIM),
@@ -106,7 +106,7 @@ def _make_y(species_code=None, **extra):
 
 class SpeciesHybridTest(unittest.TestCase):
     def test_disabled_by_default(self):
-        model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
+        model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.input_process.species_film_j)

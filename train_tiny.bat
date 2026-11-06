@@ -24,10 +24,10 @@ if not exist "dataset\cond_all.npy" (
 REM A new run trains the reference encoder from scratch; auto_resume continues this run.
 REM Target and reference input draw topology and bone-length augmentation independently.
 REM Keep the full locomotion pool; no ordered sample_limit truncation.
-REM train_anytop forces bundled TinyCC for --compile and disables C++ codegen.
+REM train_motion_diffusion forces bundled TinyCC for --compile and disables C++ codegen.
 REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
 REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
-"%PYTHON_EXE%" train/train_anytop.py ^
+"%PYTHON_EXE%" train/train_motion_diffusion.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%RUN_NAME%" ^
     --seed 10 ^

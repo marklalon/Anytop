@@ -134,7 +134,7 @@ class ResumeCannotRewriteTheRecordedGroup(unittest.TestCase):
 
     def _assert_resume(self, recorded, requested, resume_checkpoint='model000100.pt'):
         from argparse import Namespace
-        from train.train_anytop import assert_resume_keeps_action_group
+        from train.train_motion_diffusion import assert_resume_keeps_action_group
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / 'args.json').write_text(
                 json.dumps({'action_group': recorded, 'version': CKPT_VERSION}),
@@ -209,7 +209,7 @@ class VersionIsBoundToTheCheckpoint(unittest.TestCase):
         # The write side of the contract: without it every fresh run would be
         # refused by its own generation path.
         from argparse import Namespace
-        from train.train_anytop import write_args_json
+        from train.train_motion_diffusion import write_args_json
         with tempfile.TemporaryDirectory() as tmp:
             args_path = Path(tmp) / 'args.json'
             write_args_json(Namespace(action_group='locomotion'), str(args_path))
@@ -251,7 +251,7 @@ class ResumeCannotCrossAVersion(unittest.TestCase):
 
     def _assert_resume(self, recorded, resume_checkpoint='model000100.pt'):
         from argparse import Namespace
-        from train.train_anytop import assert_resume_checkpoint_version
+        from train.train_motion_diffusion import assert_resume_checkpoint_version
         with tempfile.TemporaryDirectory() as tmp:
             payload = {'action_group': 'locomotion', **joint_condition_schema_versions()}
             if recorded is not _MISSING:

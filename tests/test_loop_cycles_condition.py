@@ -15,7 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM  # noqa: E402
-from model.anytop import AnyTop, create_sin_embedding  # noqa: E402
+from model.motion_diffusion import MotionDiffusion, create_sin_embedding  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from sample.output_lengths import (  # noqa: E402
     reference_loop_cycles,
@@ -42,7 +42,7 @@ class _CaptureDecoder(torch.nn.Module):
 
 def _model(**kwargs):
     torch.manual_seed(0)
-    model = AnyTop(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
+    model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
                    num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM, **kwargs)
     # Trained heads: the zero-init last layers would hide every effect.
     for head in (model.tempo_projection, model.loop_period_projection):

@@ -24,9 +24,9 @@ def run_in_fp32(module, tensor, *rest):
     the global parameter-gradient error by ~37%.
     See docs/fp16_vs_bf16_precision.md.
 
-    Defined here rather than in model.anytop because the decoder's own
+    Defined here rather than in model.motion_diffusion because the decoder's own
     conditioning heads need it too and anytop imports this module, not the
-    other way round; ``model.anytop.run_in_fp32`` re-exports this function.
+    other way round; ``model.motion_diffusion.run_in_fp32`` re-exports this function.
     """
     with torch.autocast(device_type=tensor.device.type, enabled=False):
         return module(tensor.float(), *rest)
@@ -396,7 +396,7 @@ def circular_phase_embedding(
     otherwise ``length / gcd`` of its rows each repeated ``gcd`` times.
     ``cycles`` must hold integers; a fractional value is truncated.
 
-    For a loop sample this is the only frame-position signal: AnyTop adds it
+    For a loop sample this is the only frame-position signal: MotionDiffusion adds it
     at the input in place of the absolute frame PE, and every decoder layer
     adds it again (``GraphMotionDecoderLayer.temporal_phase_scale``).
 
@@ -462,7 +462,7 @@ class CrossLimbTemporalBlock(nn.Module):
         (frame selection along time). It is uniform, hence cancelled, only
         when every frame is equally unreliable -- at which point there is no
         reliable source to prefer anyway.
-    The trunk-wide visibility of the mask is AnyTop's ``unreliable_embedding``
+    The trunk-wide visibility of the mask is MotionDiffusion's ``unreliable_embedding``
     on the input tokens, not this block's job.
 
     Cross-K is one Pre-Norm self-attention over the K latents of each frame
@@ -1215,7 +1215,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # The loop phase table is built once here and shared by every layer:
         # the circular phase added before temporal attention, zeroed for
         # non-loop samples. Its period is T / loop_cycles ([B], the window's
-        # cycle count, 1 on a reference-active row) -- the same table AnyTop put in
+        # cycle count, 1 on a reference-active row) -- the same table MotionDiffusion put in
         # `tgt` for loop samples in place of the absolute PE. The cross-limb
         # blocks take no table: their latents inherit the frame PE through
         # cross-in (see CrossLimbTemporalBlock).
@@ -1407,7 +1407,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                     "loop_phase_embedding must have shape "
                     f"{(frames, bs, feats)}, got {tuple(loop_phase_embedding.shape)}"
                 )
-            # The same table AnyTop already put in x for loop samples, re-added
+            # The same table MotionDiffusion already put in x for loop samples, re-added
             # per layer; zero-init scale, so a fresh model starts at the input
             # table alone.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)

@@ -33,7 +33,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
 )
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from model.motion_transformer import (  # noqa: E402
     ACTION_ADALN_PARAMS_PER_LAYER,
     ACTION_ADALN_BRANCHES,
@@ -51,7 +51,7 @@ NUM_LAYERS = 2
 
 def _model(bundle, action_label_cond=True, seed=7):
     torch.manual_seed(seed)
-    model = AnyTop(
+    model = MotionDiffusion(
         max_joints=4,
         feature_len=12,
         latent_dim=TEST_LATENT_DIM,

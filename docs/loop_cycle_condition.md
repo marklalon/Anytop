@@ -4,7 +4,7 @@
 > **周期混叠**（一个周期没结束，新周期已经开始，表现为某个肢体按双倍频率运动）和
 > **速度时快时慢**。
 > 相关代码：`data_loaders/truebones/data/dataset.py`（loop roll / tile / 窗口重采样）、
-> `model/anytop.py`（绝对帧 PE、tempo PE）、`model/motion_transformer.py`（`circular_phase_embedding`）、
+> `model/motion_diffusion.py`（绝对帧 PE、tempo PE）、`model/motion_transformer.py`（`circular_phase_embedding`）、
 > `sample/output_lengths.py`、`utils/clip_length_prior.py`（自动长度）。
 
 ---

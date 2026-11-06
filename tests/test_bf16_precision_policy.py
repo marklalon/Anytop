@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from eval import eval_checkpoint  # noqa: E402
-from model.anytop import OutputProcess  # noqa: E402
+from model.motion_diffusion import OutputProcess  # noqa: E402
 from model.motion_transformer import SelectiveMultiheadAttention  # noqa: E402
 from sample import generation_runtime  # noqa: E402
 from utils import numerical_verification  # noqa: E402

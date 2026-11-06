@@ -16,7 +16,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
 )
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from model.anytop import AnyTop, create_sin_embedding  # noqa: E402
+from model.motion_diffusion import MotionDiffusion, create_sin_embedding  # noqa: E402
 
 T5_DIM = 512
 LATENT = 8
@@ -38,7 +38,7 @@ class _CaptureDecoder(torch.nn.Module):
 
 
 def _make_model():
-    model = AnyTop(
+    model = MotionDiffusion(
         max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
         num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM,
     )
@@ -74,7 +74,7 @@ def _decoder_input(model, y, frames=3, x=None):
 
 class TempoConditionTest(unittest.TestCase):
     def test_fresh_projection_is_a_no_op(self):
-        model = AnyTop(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32,
+        model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
                        t5_out_dim=T5_DIM).eval()
         emb = model._tempo_frame_embedding(

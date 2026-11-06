@@ -22,7 +22,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
 )
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_STAT_LEN, ROOT_STAT_SLICE  # noqa: E402
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
@@ -169,7 +169,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertTrue(torch.equal(cond['y']['resample_speed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
 
     def test_anytop_coerces_default_resample_speed_to_one(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,
@@ -409,7 +409,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertEqual(diffusion.lambda_root_acc, 0.23)
 
     def test_anytop_forwards_is_loop_as_the_only_loop_condition(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,

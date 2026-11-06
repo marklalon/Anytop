@@ -5,7 +5,7 @@ from torch import nn
 from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-from model.anytop import create_sin_embedding, _zero_init_mlp
+from model.motion_diffusion import create_sin_embedding, _zero_init_mlp
 from model.motion_transformer import (
     GraphMotionDecoder, GraphMotionDecoderLayer,
     TEMPORAL_ROPE_MAX_FREQ, TEMPORAL_ROPE_MAX_PERIOD,
@@ -144,7 +144,7 @@ class MotionAutoencoder(nn.Module):
         self.from_latent = nn.Linear(latent_dim, decoder_width)
         self.read_latent = nn.MultiheadAttention(decoder_width, heads, dropout=dropout_prob, batch_first=True)
         self.output = nn.Linear(decoder_width, len(MODEL_CHANNELS))
-        # As in AnyTop: physical frame times for open motion, cycle length for
+        # As in MotionDiffusion: physical frame times for open motion, cycle length for
         # loops. Shared by E/D; zero-init heads start as a no-op.
         self.tempo_projection = _zero_init_mlp(width)
         self.loop_period_projection = _zero_init_mlp(width)
@@ -203,7 +203,7 @@ class MotionAutoencoder(nn.Module):
         return angle.cos(), angle.sin()
 
     def _tempo_embedding(self, frame, metadata, decoder=False):
-        """[T,B,1,D] physical time, matching AnyTop's tempo semantics.
+        """[T,B,1,D] physical time, matching MotionDiffusion's tempo semantics.
 
         Use valid lengths rather than padded tensor width. A missing speed in
         the low-level API means native time (L=N); training/eval pass it explicitly.

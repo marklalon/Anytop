@@ -11,8 +11,8 @@ python tools/merge_dataset_cond.py --datasets dataset/datasets_all.jsonl \
     --out dataset/cond_all.npy
 
 # 训练：单数据集 / 合并只差 --cond_path
-python train/train_anytop.py --cond_path dataset/truebones/zoo/truebones_processed/cond.npy ...
-python train/train_anytop.py --cond_path dataset/cond_all.npy ...
+python train/train_motion_diffusion.py --cond_path dataset/truebones/zoo/truebones_processed/cond.npy ...
+python train/train_motion_diffusion.py --cond_path dataset/cond_all.npy ...
 
 # 推理：不传 --cond_path 时自动读 checkpoint 同目录的 cond.npy 快照
 python -m sample.generate --model_path save/<run>/model.pt --object_type zoo_upgrade/Horse
@@ -37,7 +37,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 
 | 契约 | 组成 | 消费者 |
 |---|---|---|
-| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`（+ `--action_label_cond` 时全局一份 `dataset/action_word_embeddings.npy`） | `train_anytop.py`、`Truebones` dataset |
+| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`（+ `--action_label_cond` 时全局一份 `dataset/action_word_embeddings.npy`） | `train_motion_diffusion.py`、`Truebones` dataset |
 | **推理契约** | `cond.npy` **单文件**（自足，不依赖任何数据集目录） | `generate.py`、`server/`、`process_new_skeleton`、跨骨架 retarget |
 
 `cond.npy` 是唯一入口：训练时它告诉加载器「有哪些物种、动作数据在哪」；推理时它自带全部条件（含烘焙的 species tags）。
@@ -190,7 +190,7 @@ python tools/merge_dataset_cond.py \
 
 ### 5.1 命令行
 
-- `train_anytop.py` 新增 `--cond_path`，**必填**（与 `generate.py` 同名）
+- `train_motion_diffusion.py` 新增 `--cond_path`，**必填**（与 `generate.py` 同名）
 - 单数据集训练：`--cond_path dataset/truebones/zoo/truebones_processed/cond.npy`
 - 合并训练：`--cond_path dataset/cond_all.npy`
 - 训练不指定 `--sample_filter` 时使用当前 cond.npy 和 split 中的全部物种与动作

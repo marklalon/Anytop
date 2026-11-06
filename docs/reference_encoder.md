@@ -182,7 +182,7 @@ E 不读取 species descriptor，也没有自己的 species 条件。`ref_pose` 
 
 ### 4.6 训练入口
 
-`train/train_anytop.py` 加 `--ref_encoder` 启用；同时需要 `--species_cond`（§5.4）。编码器规模由 `--ref_slots`、`--ref_dim`、`--ref_width`、`--ref_layers` 控制，ref 丢弃由 `--ref_cfg_drop_prob` 控制，编码器侧增强由 `--ref_*` 系列增强参数控制。
+`train/train_motion_diffusion.py` 加 `--ref_encoder` 启用；同时需要 `--species_cond`（§5.4）。编码器规模由 `--ref_slots`、`--ref_dim`、`--ref_width`、`--ref_layers` 控制，ref 丢弃由 `--ref_cfg_drop_prob` 控制，编码器侧增强由 `--ref_*` 系列增强参数控制。
 
 ---
 
@@ -266,7 +266,7 @@ out = x0(∅) + s_ref · (x0(ref) − x0(∅))
 |---|---|
 | `model/reference_encoder.py` | 编码器 E |
 | `model/motion_transformer.py` | decoder layer 中的 ref cross-attn、独立 LayerNorm 与零初始化 gate |
-| `model/anytop.py` | 调用 E；解析 `ref_active`；硬旁路 |
+| `model/motion_diffusion.py` | 调用 E；解析 `ref_active`；硬旁路 |
 | `model/cfg_sampler.py` | reference CFG wrapper |
 | `data_loaders/reference.py`、`data_loaders/truebones/data/dataset.py` + collate | 编码器侧增强副本、`ref_pose`（骨骼方向 + 高度）、`ref_*` 字段、ref dropout |
 | `utils/parser_util.py` | 训练侧 `--ref_*` 参数；推理侧 `--ref_cfg_scale` |

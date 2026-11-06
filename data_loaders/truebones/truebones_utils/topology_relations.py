@@ -2,7 +2,7 @@
 
 ``graph_dist`` and ``joint_relations`` are the *only* path by which the actual
 tree structure reaches the forward pass: ``parents`` is handed to the model but
-is read solely by ``AnyTop._sample_subtree_joint_mask`` (an augmentation
+is read solely by ``MotionDiffusion._sample_subtree_joint_mask`` (an augmentation
 sampler), never as a conditioning input. Whatever these two matrices fail to
 distinguish, the network cannot recover.
 

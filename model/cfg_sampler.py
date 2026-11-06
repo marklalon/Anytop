@@ -2,7 +2,7 @@
 
 Training holds the other half of this contract: ``--action_label_cfg_drop_prob``
 hard-drops the action condition on a fraction of the samples (see
-``AnyTop._resolve_action_label_active``), substituting the learned
+``MotionDiffusion._resolve_action_label_active``), substituting the learned
 ``action_label_null_emb``. That is what gives the model a real unconditional
 mode. Sampling then runs the denoiser twice per diffusion
 step -- once with the label, once with the condition forced to that null mode --
@@ -10,7 +10,7 @@ and extrapolates away from the unconditional prediction:
 
     out = out_uncond + s * (out_cond - out_uncond)
 
-AnyTop predicts x_0 rather than eps, so the extrapolation is on x_0; the algebra
+MotionDiffusion predicts x_0 rather than eps, so the extrapolation is on x_0; the algebra
 is the same, and s = 1 collapses to the plain conditional prediction.
 """
 
@@ -21,7 +21,7 @@ import torch.nn as nn
 
 
 class ClassifierFreeActionModel(nn.Module):
-    """Wrap an AnyTop denoiser with CFG over the action-label condition.
+    """Wrap an MotionDiffusion denoiser with CFG over the action-label condition.
 
     Only the action condition is guided. The unconditional pass differs from the
     conditional one by exactly ``y['action_label_active'] = False``, so every
@@ -65,8 +65,8 @@ class ClassifierFreeActionModel(nn.Module):
 
     def __getattr__(self, name):
         # Transparent stand-in for the wrapped denoiser: generate.py reads
-        # model.feature_len, and unwrap_anytop_model walks `.model` down to the
-        # AnyTop, so anything not defined on the wrapper resolves on the model.
+        # model.feature_len, and unwrap_motion_diffusion_model walks `.model` down to the
+        # MotionDiffusion, so anything not defined on the wrapper resolves on the model.
         try:
             return super().__getattr__(name)
         except AttributeError:

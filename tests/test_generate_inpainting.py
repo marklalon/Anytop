@@ -647,7 +647,7 @@ def test_create_condition_can_sample_at_target_joint_count() -> None:
     assert tuple(y["joints_padding_mask"].shape) == (2, 1, 1, 4, 4)
     assert tuple(y["graph_dist"].shape) == (2, 3, 3)
     assert torch.equal(y["n_joints"], torch.tensor([3, 3]))
-    # The output coordinate frame is an unconditional model input: AnyTop.forward
+    # The output coordinate frame is an unconditional model input: MotionDiffusion.forward
     # reads it every step, so the generation path has to stack it per sample too.
     assert tuple(y["canonical_feature_mean"].shape) == (2, CANONICAL_STAT_LEN)
     assert tuple(y["canonical_feature_std"].shape) == (2, CANONICAL_STAT_LEN)

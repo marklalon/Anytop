@@ -176,7 +176,7 @@ train_all.bat
 To train a single group or another clip combination, supply a filter file; see
 [docs/sample_filter.md](docs/sample_filter.md). The full argument set of
 the current run lives in that script; every flag is a plain CLI option of
-`python train/train_anytop.py --help`.
+`python train/train_motion_diffusion.py --help`.
 
 ## Acknowledgments
 We want to thank the following contributors that our code is based on:

@@ -37,7 +37,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from tests.action_label_test_utils import (  # noqa: E402
     TEST_LATENT_DIM,
     TEST_T5_DIM,
@@ -62,7 +62,7 @@ class _CaptureDecoder(torch.nn.Module):
 
 
 def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=None):
-    return AnyTop(
+    return MotionDiffusion(
         max_joints=4,
         feature_len=12,
         latent_dim=TEST_LATENT_DIM,
@@ -363,7 +363,7 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 
 class ActionLabelConditioningTest(unittest.TestCase):
     def test_disabled_by_default(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
             t5_out_dim=T5_DIM,

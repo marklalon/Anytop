@@ -1,6 +1,6 @@
 """Shared utilities for subtree joint mask sampling.
 
-Core logic used by ``model/anytop.py`` (``AnyTop._sample_subtree_joint_mask``).
+Core logic used by ``model/motion_diffusion.py`` (``MotionDiffusion._sample_subtree_joint_mask``).
 
 A masked draw takes one of two forms:
   * whole limbs: one or two of the rig's limbs (``limb_root_mask``), each with

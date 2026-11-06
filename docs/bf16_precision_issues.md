@@ -38,7 +38,7 @@
 
 ### 2.2 autocast 下哪些算子在 bf16
 
-- **bf16**：所有 `nn.Linear` / `matmul`，包括 FF 层、注意力 Q/K/V 投影、cross-limb block 的 `proj_in` / `proj_out`，以及最终输出投影 `OutputProcess`（[anytop.py](../model/anytop.py) `class OutputProcess`）。
+- **bf16**：所有 `nn.Linear` / `matmul`，包括 FF 层、注意力 Q/K/V 投影、cross-limb block 的 `proj_in` / `proj_out`，以及最终输出投影 `OutputProcess`（[motion_diffusion.py](../model/motion_diffusion.py) `class OutputProcess`）。
 - **已显式保护为 fp32**：
   - QK-norm（`QKNorm.forward` 把输入转 fp32 再做 `rms_norm`）；
   - 注意力 score 与 softmax（`SelectiveMultiheadAttention`、`GraphMultiHeadAttention` 中的 `.float()`）；
@@ -229,7 +229,7 @@ C' 比 B 多付约 4% 速度，前向和输出抖动上的收益与 B 几乎相�
 | 方案 | 落点 |
 |---|---|
 | A | `generate.bat` 改 `--amp_dtype fp32`；[eval_checkpoint.py](../eval/eval_checkpoint.py) 两处改为共用常量 `_COMMON_GENERATE_ARGS`（fp32）；`TrainLoop.evaluate()` 的采样固定 `torch.autocast(..., enabled=False)`；[generate.py](../sample/generate.py) `_resolve_inference_amp_dtype` 在 CUDA 上设 `set_float32_matmul_precision('high')` |
-| B | [anytop.py](../model/anytop.py) `OutputProcess.forward`，与 5.2 的代码一致 |
+| B | [motion_diffusion.py](../model/motion_diffusion.py) `OutputProcess.forward`，与 5.2 的代码一致 |
 | D | 新增 [utils/numerical_verification.py](../utils/numerical_verification.py)：`enable_numerical_verification_mode()`（第 1–3 步）、`disable_dropout(model)`（第 4 步）、`reseed(seed)`（第 5 步）；`--amp_dtype fp32` 和第 6 步由调用方负责 |
 
 实施中多发现并处理了两处：

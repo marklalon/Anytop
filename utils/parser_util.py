@@ -26,7 +26,7 @@ def parse_loop_cycles(raw):
 ACTION_GROUP_ALL = 'all'
 
 # Checkpoint compatibility stamp, written into every save_dir's args.json by
-# train_anytop and required back by extract_args. Bump it for ANY change that
+# train_motion_diffusion and required back by extract_args. Bump it for ANY change that
 # alters training or inference semantics, including ones that leave the
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality

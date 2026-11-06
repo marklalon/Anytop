@@ -21,7 +21,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
@@ -908,7 +908,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(model.last_x[:, 1], expected_masked[:, 1]))
 
     def test_anytop_forward_keeps_joint_key_padding_mask_padding_only(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,
@@ -947,7 +947,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         # Temporal self-attention is full: no window, so nothing but the spatial
         # mask reaches the decoder. The cross-limb block used to receive the same
         # window as a separate template argument -- it must still run without one.
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,
@@ -988,7 +988,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         # The capture decoder above never enters the attention blocks; this one
         # runs them, so a cross-limb block that still expected a window template
         # (or an attention that rejected attn_mask=None) would fail here.
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,
@@ -1019,7 +1019,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(out).all())
 
     def test_anytop_forward_normalizes_cross_limb_unreliable_mask_without_mutating_input(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,
@@ -1061,7 +1061,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], raw_copy))
 
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=9,
             feature_len=12,
             latent_dim=8,
@@ -1112,7 +1112,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.equal(batch_mask.cpu(), expected))
 
     def test_anytop_sample_temporal_span_mask_train_marks_contiguous_valid_joint_spans(self):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,
@@ -1158,7 +1158,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model can fill it by copying. Each period keeps at least one unmasked
         frame, and an untiled window (tile count 1) is the single span it was.
         """
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=3,
             feature_len=12,
             latent_dim=8,
@@ -1205,7 +1205,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             self.assertTrue(torch.equal(temporal_mask[2, 0], temporal_mask[2, 1]))
 
     def _empty_draw_model(self, **mask_kwargs):
-        model = AnyTop(
+        model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
             latent_dim=8,

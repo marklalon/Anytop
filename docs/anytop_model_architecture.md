@@ -327,7 +327,7 @@ cross-in（per-joint reliability_bias 加在 logits 上）
 
 “哪些区域不可靠”这条信号分三层进入网络：
 
-- `AnyTop.unreliable_embedding`：全局一个 `d_model` 向量，在 InputProcess 之后按
+- `MotionDiffusion.unreliable_embedding`：全局一个 `d_model` 向量，在 InputProcess 之后按
   `unreliable_mask` 加到输入 token 上，整个 trunk（spatial/temporal attention、FFN，
   以及 cross-limb 的 value/query）都能看到重绘区域；
 - cross-in 的标量 `reliability_bias`：做帧内的关节级选择；
@@ -485,7 +485,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 
 | 主题 | 文件 |
 |---|---|
-| AnyTop 输入、条件与 forward | `model/anytop.py` |
+| AnyTop 输入、条件与 forward | `model/motion_diffusion.py` |
 | graph/temporal/cross-limb attention | `model/motion_transformer.py` |
 | diffusion 构建与 `x_0` 目标 | `utils/model_util.py` |
 | 训练 perturbation 与损失 | `diffusion/gaussian_diffusion.py` |

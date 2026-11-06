@@ -33,7 +33,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim
 from data_loaders.reference import REST_GEOM_DIM
 
 
-class AnyTop(MotionConditioningMixin, nn.Module):
+class MotionDiffusion(MotionConditioningMixin, nn.Module):
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
                  activation="gelu", t5_out_dim = 512,
@@ -612,7 +612,7 @@ class InputProcess(nn.Module):
         # carry. Padding never reaches a live joint (the attention mask and the
         # loss both exclude it), so sharing the zero row costs nothing, and it
         # leaves inference a parameter-free way to feed a joint with no name.
-        # The mask is drawn by AnyTop (_sample_joint_name_drop).
+        # The mask is drawn by MotionDiffusion (_sample_joint_name_drop).
         # When --species_cond, the species code FiLM-modulates each per-joint
         # name embedding: gamma/beta are produced from the *concatenation* of
         # that joint's embedding and the species code, so the modulation is a
@@ -675,7 +675,7 @@ class InputProcess(nn.Module):
         required exactly when it exists; a row whose ``species_active`` is False
         bypasses the FiLM entirely.
 
-        ``frame_pos_emb`` ([T, B, D], AnyTop._frame_position_embedding) is the
+        ``frame_pos_emb`` ([T, B, D], MotionDiffusion._frame_position_embedding) is the
         frame-position signal; None adds the absolute frame PE to every sample.
         """
         # x.shape = [batch_size, joints, feature_len, frames]
@@ -700,7 +700,7 @@ class InputProcess(nn.Module):
         """Shared static skeleton channels, without motion or frame positions."""
         joints_clean = joints_embedded_names.to(device)
         if joint_valid is None:
-            # AnyTop.forward always supplies the real mask; a bare InputProcess
+            # MotionDiffusion.forward always supplies the real mask; a bare InputProcess
             # call (tests, ablations) treats every joint as live.
             joint_valid = torch.ones(
                 joints_clean.shape[:2], device=joints_clean.device, dtype=torch.bool

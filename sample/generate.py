@@ -95,7 +95,7 @@ from sample.sampling import _sample_batch
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.misc import infer_object_type_from_filename
-from utils.model_util import unwrap_anytop_model
+from utils.model_util import unwrap_motion_diffusion_model
 from utils.parser_util import generate_args
 
 
@@ -117,7 +117,7 @@ def _refuse_label_under_self_reference(action_condition):
 def _warn_inpaint_span_beyond_training(inpaint_mask, model):
     """Warn when a frame range frees more contiguous window frames than the
     training spans (``temporal_span_mask_max_frames``, window frames) reached."""
-    trained = int(getattr(unwrap_anytop_model(model), 'temporal_span_mask_max_frames', 0) or 0)
+    trained = int(getattr(unwrap_motion_diffusion_model(model), 'temporal_span_mask_max_frames', 0) or 0)
     if trained <= 0:
         return
     free = (inpaint_mask[0, :, 0, :] > 0).any(dim=0).cpu().numpy()

@@ -63,8 +63,8 @@ class ReferenceEncoder(nn.Module):
         self.output = nn.Linear(width, ref_dim)
 
     def forward(self, y):
-        # Local import: model.anytop imports this module.
-        from model.anytop import create_sin_embedding
+        # Local import: model.motion_diffusion imports this module.
+        from model.motion_diffusion import create_sin_embedding
         pose = y['ref_pose']
         batch, joints, _, frames = pose.shape
         valid = y['ref_mask'].to(device=pose.device, dtype=torch.bool)
