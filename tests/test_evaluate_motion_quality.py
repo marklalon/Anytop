@@ -154,16 +154,18 @@ def test_eval_checkpoint_rejects_a_task_without_a_scoring_label() -> None:
 def test_eval_checkpoint_config_load_fails_fast_on_a_label_less_task(tmp_path) -> None:
     from eval import eval_checkpoint
 
+    reference_path = tmp_path / "motion.npy"
+    reference_path.touch()
     config = {
         "checkpoint": {"RUN_NAME": "run"},
         "tasks": [
             {"category": "Basic", "args": ["--object_type", "Buffalo", "--action_label", "run"]},
-            {"category": "Inpaint", "args": ["--object_type", "Buffalo", "--inpaint_frames", "1-2"]},
+            {"category": "Img2img", "args": ["--object_type", "Buffalo", "--reference_motion", str(reference_path), "--skip_timesteps", "5"]},
         ],
     }
     config_path = tmp_path / "tasks.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
-    with pytest.raises(ValueError, match=r"Task #1 \(Inpaint\).*no --action_label and no eval_label"):
+    with pytest.raises(ValueError, match=r"Task #1 \(Img2img\).*no --action_label and no eval_label"):
         eval_checkpoint._load_task_config(config_path)
 
     config["tasks"][1]["eval_label"] = "run"
@@ -171,7 +173,7 @@ def test_eval_checkpoint_config_load_fails_fast_on_a_label_less_task(tmp_path) -
     _checkpoint, tasks = eval_checkpoint._load_task_config(config_path)
     assert [(category, score_label) for category, _args, score_label in tasks] == [
         ("Basic", "run"),
-        ("Inpaint", "run"),
+        ("Img2img", "run"),
     ]
 
 

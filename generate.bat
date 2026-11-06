@@ -6,7 +6,7 @@ set RUN_NAME=merged_all_v70
 rem set MODEL_FILE=model000020000.pt
 
 REM Generate with --object_type and optional --action_label.
-REM --reference_motion requires --skip_timesteps / --inpaint_* / --outpaint.
+REM --reference_motion requires --skip_timesteps.
 REM Editing uses the target's own rig; cross-skeleton transfer uses the motion autoencoder.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8

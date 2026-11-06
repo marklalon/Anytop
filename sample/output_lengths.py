@@ -336,46 +336,8 @@ def warn_loop_cycles_range(cycles, frames, *, period, internal_num_frames, motio
     return warnings
 
 
-def fit_reference_to_output(reference_features, requested_frames):
-    """The ``--outpaint`` fit: the reference as the window will be filled from
-    it, for an output of M frames.  Returns ``(features, outpaint_range, note)``.
-
-    The reference is a ONE-SHOT clip whatever the loop condition says: it covers
-    exactly the R frames it holds, so R against M is a coverage question. R < M
-    leaves ``[R, M)`` with no reference behind it and the caller outpaints that
-    span from noise (``outpaint_range`` names those frames). R >= M extends
-    nothing and is refused: the default fit (``resample_reference_to_output``)
-    is the way to reach a length the reference already covers.
-
-    ``--loop`` is a statement about the WINDOW, not about the reference.  It
-    reaches the model as ``is_loop`` -- its circular phase table, the wrap loss
-    it trained under -- and it decides how the sampled window is exported
-    (``_resample_window_to_output``).  Closing the cycle is then the model's own
-    job, and appended frames are the room it has to do it in.  Nothing here
-    reads the reference as a period.
-    """
-    R = int(reference_features.shape[0])
-    M = int(requested_frames)
-    if R >= M:
-        raise ValueError(
-            f"--outpaint extends the reference, but it already has R={R} frames for "
-            f"--num_frames {M}. Pass --num_frames above {R}, or drop --outpaint to "
-            "resample the reference to that length."
-        )
-    pad = np.repeat(reference_features[-1:], M - R, axis=0)
-    return (
-        np.concatenate([reference_features, pad], axis=0),
-        f'{R}-{M - 1}',
-        f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]',
-    )
-
-
 def resample_reference_to_output(reference_features, requested_frames):
-    """The default fit without ``--outpaint``: the whole reference is resampled
-    (endpoint, one-shot) to M frames, so it covers the window end to end at a
-    changed tempo and nothing is left for the model to fill.  Same return shape
-    as ``fit_reference_to_output``; ``outpaint_range`` is always None.
-    """
+    """Resample the whole reference to M frames; return (features, None, note)."""
     R = int(reference_features.shape[0])
     M = int(requested_frames)
     if R == M:
@@ -383,7 +345,7 @@ def resample_reference_to_output(reference_features, requested_frames):
     return (
         resample_motion_features(reference_features, M),
         None,
-        f'  Reference resampled: R={R} -> M={M} (pass --outpaint to crop/extend instead)',
+        f'  Reference resampled: R={R} -> M={M}',
     )
 
 
@@ -566,15 +528,6 @@ def _resample_window_to_output(motion_np, target_output_frames, output_frame_cou
     the exported clip's wrap step at 1 source frame against ``(T-1)/(M-1)``
     inside: a stall at every seam, i.e. a ``--loop`` run that is not a loop.
 
-    The reference goes in the other way as a one-shot clip
-    (``_prepare_img2img_reference_bundle``, endpoint resampling), so the two
-    directions are not inverse once ``M != T``: a clamped reference pose comes
-    out up to ``|M/T - 1|`` output frames from the frame it went in at (1 frame
-    at the ``M = MAX_SOURCE_FRAMES_MULT * T`` ceiling, under one below it). An
-    inpaint mask is therefore built over the union of both preimages
-    (``_map_frame_ranges_to_internal``), and an inpaint holding both clip ends
-    forces the export open so the clamped region is not resampled at all.
-
     An output shorter than the window is the source of a window the loader
     would have upsampled, so it is solved from the window
     (``invert_resample_motion_features``) rather than interpolated out of it:
@@ -583,12 +536,7 @@ def _resample_window_to_output(motion_np, target_output_frames, output_frame_cou
     was downsampled into the window, which is not invertible, and is
     interpolated.
 
-    ``invert=False`` keeps the interpolation for every length. A frame-range
-    inpaint or outpaint needs it: its mask frees exactly the window frames each
-    requested output frame interpolates from and clamps the rest to the
-    reference, while every solved output frame reads (with decaying weight)
-    the whole window, so clamped reference frames would pick up the
-    regenerated ones.
+    ``invert=False`` keeps interpolation for every length.
     """
     target_output_frames = int(target_output_frames)
     output_frame_count = int(output_frame_count)

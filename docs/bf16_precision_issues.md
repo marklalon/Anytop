@@ -136,9 +136,7 @@ bf16 的指数位与 fp32 相同，不会溢出，所以不需要 loss scaling�
 |---|---|---|---|
 | `cross_limb_blocks.0.time_emb_scale` | **559%** | **4.4×** | 4.5% |
 | `cross_limb_blocks.2.cross_k_scale` | 38% | 0.37× | 8.0% |
-| `cross_limb_blocks.3.reliability_bias` | 19% | 0.15× | 4.5% |
 | `cross_limb_blocks.2.time_emb_scale` | 12% | 0.12× | 1.5% |
-| `cross_limb_blocks.3.temporal_reliability_bias` | 12% | 0.07× | 0.5% |
 
 **机制（推断）**：标量门的梯度是上千万个"上游梯度 × 激活"乘积之和。门接近平衡位置时，这些项大量正负相消，真实梯度很小；而每一项里 bf16 舍入带来的千分之几的误差互相独立，不会相消，于是在总和里占了主导。
 

@@ -66,7 +66,6 @@ def _stub(eval_batches, use_ema, val_t_strata=4):
     stub.train_platform = _Platform()
     stub.eval_data = eval_batches
     stub.step, stub.resume_step = 41, 0
-    stub.HOST_ONLY_COND_KEYS = TrainLoop.HOST_ONLY_COND_KEYS
     return stub
 
 

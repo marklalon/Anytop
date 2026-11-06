@@ -438,8 +438,7 @@ class CrossLimbTemporalBlock(nn.Module):
     The base decoder factorizes attention into spatial (per-frame, across
     joints) and temporal (per-joint, across frames). A joint's temporal
     trajectory therefore never directly attends to another joint's, so
-    inter-limb frequency/phase coupling is only weak/implicit -- which is why
-    an inpainted limb drifts out of sync with the clamped limbs.
+    inter-limb frequency/phase coupling is only weak/implicit -- which limits whole-body coordination.
 
     This block adds the missing path: K learned latent tokens pool ALL joints
     per frame (cross-in), attend over time with the SAME windowed temporal mask
@@ -449,29 +448,11 @@ class CrossLimbTemporalBlock(nn.Module):
     SelectiveMultiheadAttention; the final residual is post-norm to stay
     consistent with norm1/2/3 of the layer.
 
-    Reliability (``unreliable_mask``, (T, B, J), 1 == being re-drawn) enters
-    at two levels, because a scalar bias on the cross-in logits alone cannot
-    express "this whole frame is unreliable": when every valid joint of a
-    frame carries the same bias, softmax's shift invariance cancels it
-    exactly, so whole-frame inpainting and temporal spans were invisible to
-    this path.
-      * cross-in keeps the per-joint ``reliability_bias`` (joint selection
-        within a frame);
-      * latent temporal attention gets a per-frame additive key bias,
-        ``temporal_reliability_bias * frac(unreliable valid joints in frame)``
-        (frame selection along time). It is uniform, hence cancelled, only
-        when every frame is equally unreliable -- at which point there is no
-        reliable source to prefer anyway.
-    The trunk-wide visibility of the mask is MotionDiffusion's ``unreliable_embedding``
-    on the input tokens, not this block's job.
-
     Cross-K is one Pre-Norm self-attention over the K latents of each frame
     (attention batch T*B, sequence K), behind a zero-init residual gate
     ``cross_k_scale``: without it two latents of the same frame only talk via
     cross-out -> next layer's spatial attention -> next layer's cross-in.
-    Both new gates (``temporal_reliability_bias``, ``cross_k_scale``) are
-    zero-init, so a fresh block starts as the plain cross-in / temporal /
-    cross-out path.
+    The cross-K residual gate is zero-initialized.
 
     Efficiency: the latent pathway runs at a *narrow* bottleneck width
     ``latent_width`` (Perceiver latents are meant to be a narrow information
@@ -507,8 +488,6 @@ class CrossLimbTemporalBlock(nn.Module):
         self.cross_k_norm = nn.LayerNorm(d_cl)
         self.cross_k_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        self.reliability_bias = nn.Parameter(torch.zeros(1))
-        self.temporal_reliability_bias = nn.Parameter(torch.zeros(1))
         self.cross_k_scale = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
 
@@ -516,7 +495,6 @@ class CrossLimbTemporalBlock(nn.Module):
         self,
         x: Tensor,
         joints_key_padding_mask: Tensor,
-        unreliable_mask: Optional[Tensor] = None,
         temporal_key_padding_mask: Optional[Tensor] = None,
     ) -> Tensor:
         # x: (T, B, J, d_model); joints_key_padding_mask: (B, J) bool,
@@ -533,35 +511,13 @@ class CrossLimbTemporalBlock(nn.Module):
         kv = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)                   # (J, T*B, d_cl)
         q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
         kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
-        reliability_attn_mask = None
         temporal_key_bias = None
-        if unreliable_mask is not None:
-            if unreliable_mask.shape != (T, B, J):
-                raise ValueError(
-                    f"unreliable_mask must have shape {(T, B, J)}, got {tuple(unreliable_mask.shape)}"
-                )
-            unreliable_mask = unreliable_mask.to(device=xd.device, dtype=xd.dtype)
-            reliability_attn_mask = self.reliability_bias * unreliable_mask.reshape(T * B, J)
-            reliability_attn_mask = reliability_attn_mask.unsqueeze(1).expand(T * B, K, J)
-            # Per-frame unreliability = fraction of VALID joints flagged, so a
-            # padded joint neither counts as reliable nor as unreliable. Laid
-            # out (B*K, T) to match the temporal attention batch (b*K + k).
-            valid = (~joints_key_padding_mask).to(device=xd.device, dtype=xd.dtype)   # (B, J)
-            frame_unreliable = (
-                (unreliable_mask * valid.unsqueeze(0)).sum(dim=-1)
-                / valid.sum(dim=-1).clamp_min(1.0).unsqueeze(0)
-            )                                                              # (T, B)
-            temporal_key_bias = self.temporal_reliability_bias * frame_unreliable.transpose(0, 1)
-            temporal_key_bias = temporal_key_bias.unsqueeze(1).expand(B, K, T).reshape(B * K, T)
         if temporal_key_padding_mask is not None:
-            padding = temporal_key_padding_mask[:, None].expand(B, K, T).reshape(B * K, T)
-            temporal_key_bias = (padding if temporal_key_bias is None else
-                                 temporal_key_bias.masked_fill(padding, float('-inf')))
+            temporal_key_bias = temporal_key_padding_mask[:, None].expand(B, K, T).reshape(B * K, T)
         bz, _ = self.cross_in_attn(
             q,
             kv,
             kv,
-            attn_mask=reliability_attn_mask,
             key_padding_mask=kpm,
             need_weights=False,
         )
@@ -578,10 +534,6 @@ class CrossLimbTemporalBlock(nn.Module):
         # redundant with that and the gate stayed at |scale| < 0.01 through a
         # full 400k-step run on every block (docs/anytop_model_architecture.md).
         zt_resid = zt_in
-        # A float key_padding_mask is an ADDITIVE key bias in
-        # SelectiveMultiheadAttention (both the SDPA and the need_weights
-        # branches add it to the scores; only a bool mask means -inf padding),
-        # so the frame-level reliability bias rides the existing argument.
         zt, _ = self.temporal_attn(
             zt_in, zt_in, zt_in,
             attn_mask=None,
@@ -1190,7 +1142,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
-            cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
             loop_cycles: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
@@ -1285,7 +1236,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y,
                     cross_limb_block=cl_block,
-                    cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
                     adaln=None if adaln is None else adaln[:, layer_ind],
                     temporal_key_padding_mask=temporal_key_padding_mask,
@@ -1403,7 +1353,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
         y = None,
         cross_limb_block: Optional[nn.Module] = None,
-        cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
         adaln: Optional[Tensor] = None,
         temporal_key_padding_mask: Optional[Tensor] = None,
@@ -1432,7 +1381,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             x = cross_limb_block(
                 x,
                 tgt_key_padding_mask,
-                unreliable_mask=cross_limb_unreliable_mask,
                 temporal_key_padding_mask=temporal_key_padding_mask,
             )
         x = self.norm3(x + self._ff_block(_modulate(x, adaln, ADALN_FF)))

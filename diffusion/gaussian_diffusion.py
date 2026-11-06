@@ -253,9 +253,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         lambda_loop_wrap=0.,
         lambda_bone=0.,
         lambda_limb_corr=0.,
-        temporal_span_seam_loss_weight=0.0,
-        temporal_span_seam_width=0,
-        renoise_same_level_prob=1.0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -274,30 +271,12 @@ class GaussianDiffusion(MotionGeometryLosses):
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_bone = float(lambda_bone)
         self.lambda_limb_corr = float(lambda_limb_corr)
-        self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
-        self.temporal_span_seam_width = int(temporal_span_seam_width)
-        self.renoise_same_level_prob = float(renoise_same_level_prob)
-        if not 0.0 <= self.renoise_same_level_prob <= 1.0:
-            raise ValueError(
-                "renoise_same_level_prob must be in [0, 1], got "
-                f"{self.renoise_same_level_prob}"
-            )
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
         if self.lambda_bone < 0.0:
             raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
         if self.lambda_limb_corr < 0.0:
             raise ValueError(f"lambda_limb_corr must be >= 0, got {self.lambda_limb_corr}")
-        if self.temporal_span_seam_loss_weight < 0.0:
-            raise ValueError(
-                "temporal_span_seam_loss_weight must be >= 0, got "
-                f"{self.temporal_span_seam_loss_weight}"
-            )
-        if self.temporal_span_seam_width < 0:
-            raise ValueError(
-                f"temporal_span_seam_width must be >= 0, got {self.temporal_span_seam_width}"
-            )
-
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
         self.betas = betas
@@ -376,88 +355,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         mse_loss_val = loss / non_zero_elements
         return mse_loss_val
 
-    def weighted_feature_l2(self, a, b, weights):
-        if weights.dim() == 3:
-            weights = weights.unsqueeze(2)
-        weighted_loss = self.l2_loss(a, b) * weights.float()
-        loss = sum_flat(weighted_loss)
-        denom = sum_flat(weights.float()) * a.size(2)
-        return loss / (denom + 1e-8)
-
-    def _normalize_temporal_span_time_mask(self, temporal_span_mask):
-        if temporal_span_mask is None:
-            return None
-        if temporal_span_mask.dim() == 3:
-            return temporal_span_mask.any(dim=1)
-        if temporal_span_mask.dim() == 2:
-            return temporal_span_mask
-        raise ValueError(
-            "temporal_span_mask must have shape (B, J, T) or (B, T), got "
-            f"{tuple(temporal_span_mask.shape)}"
-        )
-
-    def _build_temporal_span_seam_weights(self, temporal_span_mask):
-        if (
-            temporal_span_mask is None
-            or self.temporal_span_seam_width <= 0
-        ):
-            return None
-
-        temporal_span_time = self._normalize_temporal_span_time_mask(temporal_span_mask)
-
-        batch_size, n_frames = temporal_span_time.shape
-        device = temporal_span_time.device
-        band = int(self.temporal_span_seam_width)
-        # Treat seam_width as an approximately 2-sigma support radius so the
-        # boundary frame remains dominant while nearby frames still contribute.
-        sigma = max(float(band) / 2.0, 1e-6)
-
-        # A boundary is a masked frame whose previous or next frame is unmasked.
-        prev_mask = th.zeros_like(temporal_span_time)
-        prev_mask[:, 1:] = temporal_span_time[:, :-1]
-        next_mask = th.zeros_like(temporal_span_time)
-        next_mask[:, :-1] = temporal_span_time[:, 1:]
-        boundary = temporal_span_time & ~(prev_mask & next_mask)                  # [B, T]
-
-        # Each frame takes the largest Gaussian weight of the boundaries within
-        # `band` of it (0 when there are none), as one windowed max over the
-        # batch. The per-sample, per-boundary loop this replaces read the mask
-        # back to the host several times per sample every step.
-        offsets = th.arange(-band, band + 1, device=device)
-        kernel = th.exp(-0.5 * (offsets.float() / sigma) ** 2)                    # symmetric
-        padded = th.nn.functional.pad(boundary.to(th.float32), (band, band))
-        windows = padded.unfold(-1, 2 * band + 1, 1)                             # [B, T, 2*band+1]
-        seam_weights = (windows * kernel).amax(dim=-1)
-        # All zero when no span was drawn; the seam loss is then 0 without a
-        # host check.
-        return seam_weights.view(batch_size, 1, 1, n_frames)
-
-    def temporal_span_seam_acceleration_loss(
-        self, target, model_output, temporal_span_seam_weights, spat_mask
-    ):
-        # target / model_output: [bs, njoints, nfeats, nframes] (denormalized).
-        # Penalize the prediction's second-order temporal difference
-        # (acceleration) of the position channel against the target's, weighted
-        # by the seam band. This is target-relative on purpose: l_simple matches
-        # per-frame values and dpos_loss matches steps averaged over the whole
-        # window, so neither concentrates on the inpainting seam, where an
-        # acceleration spike absent from ground truth appears. Matching GT
-        # acceleration in the band kills that spike without over-smoothing
-        # genuinely sharp motion.
-        n_frames = model_output.shape[-1]
-        if n_frames < 3 or model_output.shape[2] < 3:
-            return None
-        pos_pred = model_output[:, :, 0:3, :]
-        pos_target = target[:, :, 0:3, :]
-        acc_pred = pos_pred[:, :, :, 2:] - 2.0 * pos_pred[:, :, :, 1:-1] + pos_pred[:, :, :, :-2]
-        acc_target = pos_target[:, :, :, 2:] - 2.0 * pos_target[:, :, :, 1:-1] + pos_target[:, :, :, :-2]
-        # Acceleration at interior index k is centered on frame k+1, so drop the
-        # two edge frames from the time weights.
-        center_weights = temporal_span_seam_weights[:, :, :, 1:-1]
-        joint_valid = spat_mask.transpose(1, 3)  # [bs, njoints, 1, 1]
-        weights = center_weights * joint_valid  # [bs, njoints, 1, nframes-2]
-        # Samples without a seam weigh 0 (weighted_feature_l2 guards the denominator).
-        return self.weighted_feature_l2(acc_pred, acc_target, weights)
 
     def quat_to_mat(self, qs):
         r = qs[..., 0]
@@ -874,27 +771,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"].detach()}
 
-    def _inpaint_project(self, sample, i, shape, device, inpaint_mask, inpaint_reference):
-        """Imputation: replace the known (unmasked) region of the
-        just-produced x_{i-1} with the reference forward-noised to step i-1.
-
-        inpaint_mask is 1.0 where the region is regenerated (free) and 0.0
-        where it must equal the reference. At the final step (i == 0) the
-        clean reference is used (no noise). Returns the projected sample so
-        callers can write it back into out["sample"] BEFORE yielding (the
-        loop yields before reading out["sample"], and the wrappers return
-        final["sample"], so an in-place local edit would not survive).
-        """
-        if inpaint_mask is None or inpaint_reference is None:
-            return sample
-        if i == 0:
-            known = inpaint_reference
-        else:
-            t_prev = th.tensor([i - 1] * shape[0], device=device)
-            known = self.q_sample(
-                inpaint_reference, t_prev, th.randn_like(inpaint_reference)
-            )
-        return inpaint_mask * sample + (1.0 - inpaint_mask) * known
 
     def p_sample_loop(
         self,
@@ -913,8 +789,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
-        inpaint_mask=None,
-        inpaint_reference=None,
         noise_sampler=None,
     ):
         """
@@ -957,8 +831,6 @@ class GaussianDiffusion(MotionGeometryLosses):
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
             const_noise=const_noise,
-            inpaint_mask=inpaint_mask,
-            inpaint_reference=inpaint_reference,
         )):
             final = sample
             if dump_steps is not None and i in dump_steps:
@@ -984,8 +856,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         randomize_class=False,
         cond_fn_with_grad=False,
         const_noise=False,
-        inpaint_mask=None,
-        inpaint_reference=None,
         noise_sampler=None,
     ):
         """
@@ -996,7 +866,7 @@ class GaussianDiffusion(MotionGeometryLosses):
         Returns a generator over dicts, where each dict is the return value of
         p_sample().
         """
-        if noise_sampler is not None and (cond_fn_with_grad or randomize_class or inpaint_mask is not None):
+        if noise_sampler is not None and (cond_fn_with_grad or randomize_class):
             raise ValueError('Custom noise supports plain, non-gradient sampling only')
         if device is None:
             device = next(model.parameters()).device
@@ -1044,10 +914,6 @@ class GaussianDiffusion(MotionGeometryLosses):
                     model_kwargs=model_kwargs,
                     **noise_kwargs,
                     const_noise=const_noise,
-                )
-                out["sample"] = self._inpaint_project(
-                    out["sample"], current_i, shape, device,
-                    inpaint_mask, inpaint_reference,
                 )
                 yield out
                 img = out["sample"]
@@ -1218,8 +1084,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
-        inpaint_mask=None,
-        inpaint_reference=None,
         noise_sampler=None,
     ):
         """
@@ -1249,8 +1113,6 @@ class GaussianDiffusion(MotionGeometryLosses):
             init_image=init_image,
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
-            inpaint_mask=inpaint_mask,
-            inpaint_reference=inpaint_reference,
         ):
             final = sample
         return final["sample"]
@@ -1271,8 +1133,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         init_image=None,
         randomize_class=False,
         cond_fn_with_grad=False,
-        inpaint_mask=None,
-        inpaint_reference=None,
         noise_sampler=None,
     ):
         """
@@ -1281,7 +1141,7 @@ class GaussianDiffusion(MotionGeometryLosses):
 
         Same usage as p_sample_loop_progressive().
         """
-        if noise_sampler is not None and (cond_fn_with_grad or randomize_class or inpaint_mask is not None):
+        if noise_sampler is not None and (cond_fn_with_grad or randomize_class):
             raise ValueError('Custom noise supports plain, non-gradient sampling only')
         if device is None:
             device = next(model.parameters()).device
@@ -1330,10 +1190,6 @@ class GaussianDiffusion(MotionGeometryLosses):
                     **noise_kwargs,
                     eta=eta,
                 )
-                out["sample"] = self._inpaint_project(
-                    out["sample"], current_i, shape, device,
-                    inpaint_mask, inpaint_reference,
-                )
                 yield out
                 img = out["sample"]
 
@@ -1372,156 +1228,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def _apply_joint_mask_training_perturbation(
-        self, model, x_start, x_t, t, model_kwargs
-    ):
-        """Re-noise selected joints / spans without altering attention masks.
-
-        Training-time structured corruption is meant to mimic the mixed
-        reliability at the model input, not to hide tokens from attention.
-        The selected joints / frames keep participating in attention; only
-        their x_t features are replaced by q_sample(x_0, t_random), with
-        ``t_random`` either equal to ``t`` (same level, fresh noise) or drawn
-        from ``[t, T)`` -- never below ``t``, so the flagged region is never
-        cleaner than the rest. See ``_sample_renoise_timesteps``.
-
-        Whether ``y`` carries ``'cross_limb_unreliable_mask'`` follows the
-        samplers: they return ``None`` only when the feature is off (or in eval
-        mode) and an all-False mask when a draw happens to select nothing, so
-        the key is present on every training step of a given run instead of
-        disappearing on the rare empty batch and forcing a recompile.
-
-        ``sample_unreliable_mask_cond_drop_train`` may additionally zero whole
-        rows of the mask that is published to the model while leaving the
-        re-noise itself untouched, which trains the model to repair motion when
-        no reliability map is supplied at inference. It zeroes rows rather than
-        removing the key, for the same recompile reason.
-        """
-        y = model_kwargs.get('y') if model_kwargs is not None else None
-        model_for_hooks = self._unwrap_model_for_training_hooks(model)
-
-        subtree_mask = None
-        if hasattr(model_for_hooks, 'sample_subtree_joint_mask_train'):
-            subtree_mask = model_for_hooks.sample_subtree_joint_mask_train(
-                model_kwargs.get('y', {}), x_t.shape[1], x_t.device
-            )
-
-        temporal_span_mask = None
-        if hasattr(model_for_hooks, 'sample_temporal_span_mask_train'):
-            temporal_span_mask = model_for_hooks.sample_temporal_span_mask_train(
-                model_kwargs.get('y', {}), x_t.shape[1], x_t.shape[-1], x_t.device
-            )
-
-        corruption_mask = None
-        if subtree_mask is not None:
-            subtree_mask = subtree_mask.to(device=x_t.device, dtype=th.bool)
-            expected_subtree_shape = (x_t.shape[0], x_t.shape[1])
-            if subtree_mask.shape != expected_subtree_shape:
-                raise ValueError(
-                    "sample_subtree_joint_mask_train must return shape "
-                    f"{expected_subtree_shape}, got {tuple(subtree_mask.shape)}"
-                )
-            corruption_mask = subtree_mask[:, :, None].expand(-1, -1, x_t.shape[-1])
-
-        if temporal_span_mask is not None:
-            temporal_span_mask = temporal_span_mask.to(device=x_t.device, dtype=th.bool)
-            if temporal_span_mask.dim() == 2:
-                temporal_span_mask = temporal_span_mask[:, None, :].expand(-1, x_t.shape[1], -1)
-            expected_temporal_shape = (x_t.shape[0], x_t.shape[1], x_t.shape[-1])
-            if temporal_span_mask.shape != expected_temporal_shape:
-                raise ValueError(
-                    "sample_temporal_span_mask_train must return shape "
-                    f"{expected_temporal_shape} or (B, T), got {tuple(temporal_span_mask.shape)}"
-                )
-            corruption_mask = (
-                temporal_span_mask
-                if corruption_mask is None
-                else (corruption_mask | temporal_span_mask)
-            )
-
-        if corruption_mask is None:
-            if y is not None:
-                y.pop('cross_limb_unreliable_mask', None)
-            return x_t, temporal_span_mask
-
-        if y is not None:
-            # The mask published to the model may be a strict subset of the
-            # corruption: rows drawn by the cond-dropout are re-noised exactly
-            # the same, but told nothing, so the model has to localize the
-            # damage itself -- the regime at inference when no mask is given.
-            cond_mask = corruption_mask
-            drop_cond = None
-            if hasattr(model_for_hooks, 'sample_unreliable_mask_cond_drop_train'):
-                drop_cond = model_for_hooks.sample_unreliable_mask_cond_drop_train(
-                    x_t.shape[0], x_t.device
-                )
-            if drop_cond is not None:
-                drop_cond = drop_cond.to(device=x_t.device, dtype=th.bool).reshape(-1)
-                if drop_cond.shape != (x_t.shape[0],):
-                    raise ValueError(
-                        "sample_unreliable_mask_cond_drop_train must return shape "
-                        f"{(x_t.shape[0],)}, got {tuple(drop_cond.shape)}"
-                    )
-                cond_mask = corruption_mask & ~drop_cond[:, None, None]
-            y['cross_limb_unreliable_mask'] = cond_mask.transpose(1, 2).to(
-                dtype=x_t.dtype
-            ).contiguous()
-
-        t_random = self._sample_renoise_timesteps(t, x_t.device)
-        fresh_noise = th.randn_like(x_start)
-        x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
-        return th.where(corruption_mask[:, :, None, :], x_t_random, x_t), temporal_span_mask
-
-
-    def _sample_renoise_timesteps(self, t, device):
-        """Draw the independent timestep the flagged cells are re-noised at.
-
-        A mixture of two branches, chosen per sample with
-        ``renoise_same_level_prob``:
-
-        * same-level (``t_random = t``): the flagged region is re-drawn with
-          fresh noise at the SAME level as the rest of the sample. Its one-step
-          marginal is the plain ``q(x_t | x_0)``, so the flag is decoupled from
-          "much noisier than the surroundings". That is the regime every
-          inpainting step actually presents: the clamped region is the
-          reference at the current level (``_inpaint_project``), the free
-          region is the reverse process's own state at that same nominal level,
-          and with ``skip_timesteps`` the first step's free region is the
-          reference at that level too. Without this branch the flag and a
-          large extra noise gap are perfectly correlated in training
-          (``E[t_random - t] ~ T/4`` for uniform ``t``), and once the mask is
-          visible to the whole trunk (``unreliable_embedding``) the model can
-          read the flag as "discard" rather than "may be less reliable".
-        * hard (uniform on ``[t, T)``): the flagged region carries strictly
-          LESS information about x_0 than its surroundings, which trains the
-          repair of severe local damage from reliable context. Never below
-          ``t``: a region that is *cleaner* than its surroundings yet flagged
-          occurs nowhere at inference, and would pull ``reliability_bias``
-          toward zero by making the flag ambiguous.
-
-        Both draws are on-device ``rand`` (no host sync); the hard branch
-        degenerates to ``t`` as ``t`` approaches ``T``, which is correct: at
-        near-pure noise there is nothing left to degrade.
-        """
-        span = (self.num_timesteps - t).clamp(min=1).to(th.float32)
-        offset = (th.rand(t.shape, device=device, dtype=th.float32) * span).to(t.dtype)
-        t_hard = (t + offset).clamp(max=self.num_timesteps - 1)
-        if self.renoise_same_level_prob <= 0.0:
-            return t_hard
-        if self.renoise_same_level_prob >= 1.0:
-            return t.clone()
-        same_level = th.rand(t.shape, device=device) < self.renoise_same_level_prob
-        return th.where(same_level, t, t_hard)
-
-    @staticmethod
-    def _unwrap_model_for_training_hooks(model):
-        unwrapped_model = model
-        while hasattr(unwrapped_model, 'model'):
-            next_model = getattr(unwrapped_model, 'model')
-            if next_model is None or next_model is unwrapped_model:
-                break
-            unwrapped_model = next_model
-        return unwrapped_model
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
@@ -1546,20 +1252,6 @@ class GaussianDiffusion(MotionGeometryLosses):
         if noise is None:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
-
-        # Subtree perturbation: when the model selects a subset of joints
-        # (via joint_mask_prob), replace those joints' x_t slice with
-        # q_sample(x_0, t_random, fresh_noise) -- same x_0 ground truth (so
-        # the loss target is unchanged) but at a random independent timestep
-        # with fresh independent noise. The selected joints continue to
-        # participate in attention normally; the model must learn to denoise
-        # them despite their noise level disagreeing with the rest of the
-        # batch sample, which is exactly what inpaint clamping produces at
-        # inference (clamped joints are at a fixed reference's q_sample state
-        # that's uncorrelated with the in-flight masked joint's trajectory).
-        x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(
-            model, x_start, x_t, t, model_kwargs
-        )
 
         terms = {}
 
@@ -1654,23 +1346,6 @@ class GaussianDiffusion(MotionGeometryLosses):
                     target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
                     model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
 
-                if self.temporal_span_seam_loss_weight > 0.0:
-                    temporal_span_seam_weights = self._build_temporal_span_seam_weights(
-                        temporal_span_mask
-                    )
-                    if temporal_span_seam_weights is not None:
-                        seam_acc_loss = self.temporal_span_seam_acceleration_loss(
-                            target_physical,
-                            model_output_physical,
-                            temporal_span_seam_weights,
-                            joints_padding_mask_fp32,
-                        )
-                        if seam_acc_loss is not None:
-                            terms["temporal_span_seam_loss"] = seam_acc_loss
-                            terms["loss"] = (
-                                terms["loss"]
-                                + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
-                            )
 
                 # The geodesic and bone losses share physical local matrices.
                 rotations = None

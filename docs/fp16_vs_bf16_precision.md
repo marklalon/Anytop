@@ -118,7 +118,6 @@ bf16 这个数与旧文 4.1 节实施 B 之后的 1.75e-3 一致，互为交叉�
 |---|---|---|---|
 | `action_label_null_emb` | 8.7e-2 | 3.3e-3 | 26.7 |
 | `cross_limb_blocks.1.cross_k_scale` | 6.8e-2 | 2.8e-3 | 24.2 |
-| `cross_limb_blocks.0.reliability_bias` | 5.7e-2 | 1.1e-2 | 4.9 |
 | `cross_limb_blocks.3.time_emb_scale` | 2.6e-2 | 2.3e-3 | 11.3 |
 | `layers.3.temporal_phase_scale` | 2.3e-2 | 1.7e-3 | 13.4 |
 
@@ -180,7 +179,7 @@ fp16 最小规格化数 6.1e-5、最小非规格化数 6.0e-8。放大 2^17 之�
 
 这是全部测量里唯一 fp16 输给 bf16 的地方，而且它会自愈：门一打开，梯度涨回 1e-5 量级，fp16 立刻恢复到 bf16 的 1/9。
 
-**什么时候要小心**：新加一条零初始化门控通路（`time_emb_scale`、`temporal_phase_scale`、`cross_k_scale`、`reliability_bias` 都是这种）并从头训练时，最初几千步这条通路的梯度可能就在 1e-10 量级。此时 fp16 给它的梯度基本是噪声，门可能迟迟打不开。对策：这种改动的前几千步用 `--amp_dtype bf16` 跑，或者按本文方法量一次该通路的 `激活梯度中位数 × 当前 scale`，确认 ≳1e-3。
+**什么时候要小心**：新加一条零初始化门控通路（`time_emb_scale`、`temporal_phase_scale`、`cross_k_scale` 都是这种）并从头训练时，最初几千步这条通路的梯度可能就在 1e-10 量级。此时 fp16 给它的梯度基本是噪声，门可能迟迟打不开。对策：这种改动的前几千步用 `--amp_dtype bf16` 跑，或者按本文方法量一次该通路的 `激活梯度中位数 × 当前 scale`，确认 ≳1e-3。
 
 ## 6. 速度与显存
 
@@ -247,7 +246,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 | C | scaler 溢出与真实梯度尖峰分开分类、分开限额、分开文件名 | [training_loop.py](../train/training_loop.py) `classify_grad_event`、`AMP_OVERFLOW_MAX_DUMPS`、`_maybe_capture_spike` |
 | D | 广播型条件头固定 fp32 | [motion_diffusion.py](../model/motion_diffusion.py) `run_in_fp32` + 8 处调用 |
 
-- **A**：`cross_k_scale` 是模型里唯一一个背后挂着整张子网络的零初始化门（其余 `time_emb_scale` / `temporal_phase_scale` / `*_reliability_bias` 只门住一个加法项，门自身的梯度并不小）。子路只有 K 个 token、瓶颈宽度，fp32 实测 0 成本。
+- **A**：`cross_k_scale` 是模型里唯一一个背后挂着整张子网络的零初始化门（其余 `time_emb_scale` / `temporal_phase_scale` 只门住一个加法项，门自身的梯度并不小）。子路只有 K 个 token、瓶颈宽度，fp32 实测 0 成本。
 - **B**：当前 `GradScaler` 显式以 2^15 初始化并封顶，避免新 run 在第一步探测 2^16；真正溢出时仍会下降。**恢复旧 run 时**保存的更高 scale 会在第一次 optimizer update 后被拉回 2^15（并重置 growth tracker）。
 - **C**：旧逻辑用 `not np.isfinite(grad_norm)` 当尖峰触发条件，而 `_optimize_amp` 恰好用 `inf` 标记"因非有限梯度跳过"。没有 scaler 的 bf16 / fp32 下 `inf` 仍然算真实故障，照样 dump。
 - **D**：`tempo_projection`、`loop_condition_projection`、`action_label_projection`、`canonical_frame_projection`、`input_process.{species_film_j, text_embedding, struct_embedding}`。`InputProcess` 的返回本来就在末尾被 fp32 的 pos_emb 提升，所以下游看到的 dtype 没有变化。
@@ -284,7 +283,7 @@ QKNorm（5000 步 checkpoint，扫 2^12–2^24）：
 | 参数梯度（429 个张量，5k） | 1.10 | 7.14 | 8.87 | 11.67 | 27.31 |
 | 前向激活（140 层，200k） | 6.97 | — | 7.87 | — | 8.50 |
 
-前向优势严格是 7–8.9 倍（尾数位数之差）；梯度侧最小只有 1.04 倍，落在 `reliability_bias` / `temporal_phase_scale` 这类正负相消主导的标量门上——那里的误差不由尾数决定，所以 fp16 只是打平。
+前向优势严格是 7–8.9 倍（尾数位数之差）；梯度侧最小只有 1.04 倍，落在 `temporal_phase_scale` 这类正负相消主导的标量门上——那里的误差不由尾数决定，所以 fp16 只是打平。
 注意标量 loss 本身两边都已经在 1e-4 相对量级、彼此互有胜负，那是 fp32 归约的噪声底，不构成反例。
 
 成本：

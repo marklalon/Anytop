@@ -144,7 +144,7 @@ name_vec  = text_embedding( modulated )                                  # Linea
 ### 4.2 激活规则
 
 启用 `--species_cond` 时，species FiLM 在所有训练和推理行上开启，没有自己的 CFG drop 或 null 模式。
-推理的 `--species_tags` 可覆盖描述符，包括 img2img、inpaint 与 outpaint 编辑。
+推理的 `--species_tags` 可覆盖描述符，包括 img2img 编辑。
 
 ### 4.3 species 通路的作用边界
 

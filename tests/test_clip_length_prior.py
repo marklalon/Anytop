@@ -484,60 +484,6 @@ def _loop_clip_with_closing_key(period=40, joints=4):
 
 
 # -- fitting the reference to M ------------------------------------------------
-def _fit(features, M):
-    from sample.output_lengths import fit_reference_to_output
-
-    fitted, outpaint_range, _ = fit_reference_to_output(features, M)
-    return fitted, outpaint_range
-
-
-@pytest.mark.parametrize("M", [46, 90])
-def test_a_loop_reference_is_fitted_like_a_one_shot(M):
-    """The loop verdict is taken off the reference and handed to the model as
-    is_loop; it buys the reference itself nothing. A cycle that falls short of
-    M is outpainted exactly like an open clip, and closing the cycle over the
-    appended frames is left to the model."""
-    _, cycle = _loop_clip_with_closing_key(period=45)
-    fitted, outpaint_range = _fit(cycle, M)
-
-    assert fitted.shape[0] == M
-    assert outpaint_range == f"45-{M - 1}"
-    assert np.array_equal(fitted[:45], cycle)
-
-
-@pytest.mark.parametrize("M", [20, 45])
-def test_outpaint_refuses_a_reference_that_already_covers_M(M):
-    _, cycle = _loop_clip_with_closing_key(period=45)
-    with pytest.raises(ValueError, match="--outpaint extends the reference"):
-        _fit(cycle, M)
-
-
-def test_a_loop_references_closing_key_is_its_own_frame():
-    """Nothing trims the reference any more, so a clip shipping a closing key is
-    R = period + 1 frames of reference: the fit reads that length and the extra
-    frame stays in the motion the window is filled from."""
-    closed, cycle = _loop_clip_with_closing_key(period=45)
-    assert closed.shape[0] == 46
-
-    fitted, outpaint_range = _fit(closed, 90)
-    assert outpaint_range == "46-89"
-    assert np.array_equal(fitted[:46], closed)
-    assert np.array_equal(fitted[:45], cycle)
-
-    fitted, outpaint_range = _fit(closed, 50)
-    assert outpaint_range == "46-49"
-    assert np.array_equal(fitted[:46], closed)
-
-
-def test_a_one_shot_is_outpainted_past_its_frames():
-    """An open clip covers exactly the R frames it holds, so the coverage test
-    stands: the tail past R has no reference behind it."""
-    _, clip = _loop_clip_with_closing_key(period=45)
-
-    fitted, outpaint_range = _fit(clip, 50)
-    assert outpaint_range == "45-49" and fitted.shape[0] == 50
-    assert np.array_equal(fitted[:45], clip)
-    assert np.array_equal(fitted[45:], np.repeat(clip[-1:], 5, axis=0))
 
 
 def test_loop_flag_spellings():

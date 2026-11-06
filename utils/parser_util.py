@@ -31,7 +31,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 58
+CKPT_VERSION = 59
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -523,36 +523,6 @@ def add_training_options(parser):
                             "times the running geometric mean at its diffusion timestep (a per-sample Huber on the "
                             "RMS error; see train/sample_loss_limit.py). Stops one outlier clip from owning the "
                             "clipped batch gradient, touching only the far tail of the samples. 0 disables it.")
-    group.add_argument("--joint_mask_prob", default=0.5, type=float,
-                       help="Per-sample probability of applying a training-time subtree joint perturbation: one or "
-                           "two whole limbs (so a limb's phase must come from the other limbs), or one subtree of at "
-                           "most half the rig (the --inpaint_joints shapes). Selected joints keep their supervision "
-                           "loss and remain visible to attention, but their x_t features are re-noised at an "
-                           "independent timestep to mimic mixed reliability during inpainting.")
-    group.add_argument("--unreliable_mask_drop_prob", default=0.0, type=float,
-                       help="Per-sample probability of hiding the training-time unreliable mask from the model. "
-                            "The selected joints / frames are still re-noised, the model just is not told which ones, "
-                            "so it learns to localize and repair the damage on its own -- the regime at inference when "
-                            "no mask is supplied. 0 disables it (the model always sees the mask).")
-    group.add_argument("--temporal_span_mask_prob", default=0.0, type=float,
-                       help="Probability of sampling a contiguous training-time temporal span perturbation. "
-                            "Selected frames are re-noised for all real joints to teach native frame inpainting.")
-    group.add_argument("--temporal_span_mask_min_frames", default=4, type=int,
-                       help="Minimum length of each sampled training-time temporal span perturbation.")
-    group.add_argument("--temporal_span_mask_max_frames", default=20, type=int,
-                       help="Maximum length of each sampled training-time temporal span perturbation. "
-                            "Must be >= temporal_span_mask_min_frames.")
-    group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
-                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and dpos_loss do not catch. 0 disables it.")
-    group.add_argument("--temporal_span_seam_width", default=2, type=int,
-                       help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
-    group.add_argument("--renoise_same_level_prob", default=1.0, type=float,
-                       help="Per-sample probability that a flagged (joint-mask / temporal-span) region is re-noised "
-                            "at the SAME timestep as the rest of the sample (fresh noise, t_random = t) instead of "
-                            "the hard branch uniform on [t, T). The same-level branch decouples the unreliable flag "
-                            "from 'much noisier than the surroundings', which is the regime inpainting presents at "
-                            "every step; the hard branch keeps training the repair of severe local damage. "
-                            "0 restores the pure [t, T) draw, 1 (default) makes every flagged region same-level.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--use_ema", action='store_true',
@@ -614,9 +584,6 @@ def add_sampling_options(parser):
                             "before frame 0, whatever number of cycles it holds. A --reference_motion is placed "
                             "into it the same way and the sampled window is rescaled to --num_frames the same "
                             "way, so the output is a loop whatever the reference is. "
-                            "An --inpaint_frames range that, mapped onto the window, keeps both window ends "
-                            "clamped overrides this to 'off': there is no closure for the model to make, and "
-                            "a periodic export would resample those clamped ends. "
                             "'off': an open window. 'auto' (default): with a --reference_motion, follow its own "
                             "loop verdict; else, with --action_label and no reference, 'on' when the label "
                             "is phase-free (heads walk, run, swim, fly, idle ... with only gait / posture / "
@@ -657,23 +624,16 @@ def add_generate_options(parser):
                             "(needs a cond.npy baked by tools/regenerate_dataset_artifacts.py); "
                             "else the checkpoint's native window (60). "
                             "When R != M the reference is resampled to M frames (tempo "
-                            "change); pass --outpaint to crop / extend it instead. "
+                            "change). "
                             "Valid range: [min_length, MAX_SOURCE_FRAMES_MULT*num_frames] "
                             "of the checkpoint (param_utils.MAX_SOURCE_FRAMES_MULT); an "
                             "auto-picked length is clamped into it.")
-    group.add_argument("--outpaint", action="store_true",
-                       help="With --reference_motion, fit the reference to --num_frames M "
-                            "by length instead of by tempo: R > M crops the tail, R < M "
-                            "keeps the R frames clamped and generates [R, M) from noise. "
-                            "Without it the reference is always resampled to M.")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "
                             "containing a single species (that species is used). Otherwise "
                             "required for pure-random generation. When both flags are provided "
-                            "and the inferred type differs from this value, the reference motion "
-                            "drives this skeleton through the motion encoder (no retargeting), "
-                            "or, with skip_timesteps / inpaint / outpaint, must be the same species.")
+                            "the reference motion must use the same species and skeleton.")
     group.add_argument("--sampling_method", default="ddpm", choices=["p", "ddpm", "ddim"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (default). 'ddim' = DDIM. "
                             "Both cost the same at the same --sampling_steps. DDIM is deterministic "
@@ -685,44 +645,11 @@ def add_generate_options(parser):
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
     group.add_argument("--reference_motion", default=None, type=str,
-                       help="Same-rig motion .npy/.fbx/.glb/.gltf used only for img2img, inpaint or "
-                            "outpaint editing. Requires --skip_timesteps, --inpaint_* or --outpaint. "
+                       help="Same-rig motion .npy/.fbx/.glb/.gltf used for img2img. Requires --skip_timesteps. "
                             "Cross-skeleton motion transfer is handled by the motion autoencoder.")
     group.add_argument("--skip_timesteps", default=None, type=int,
-                       help="Number of timesteps to skip when using --reference_motion (img2img). Higher = more faithful to reference. "
-                           "Range: 0~sampling_steps. Default: required when using --reference_motion without --inpaint_*; "
-                           "default: 0 when combined with --inpaint_* (disabled; use --skip_timesteps N to enable). "
-                           "When combined with --inpaint_*, the skip is applied "
-                           "only inside the masked region by starting that region from an img2img-noised reference, while "
-                          "the unmasked region stays clamped to the original reference throughout denoising.")
-    group.add_argument("--inpaint_joints", default="", type=str,
-                       help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
-                            "REGENERATED while the rest is held to --reference_motion. Names accept any of the "
-                            "raw / canonical / canonical_bvh aliases (use the names you see in the exported "
-                            "GLB/BVH). Empty = all real joints (pure temporal inpainting). Requires "
-                            "--reference_motion. NOTE: do NOT list the root joint for limb inpainting "
-                            "(it is the global anchor).")
-    group.add_argument("--inpaint_include_subtree", action="store_true", default=True,
-                       help="When resolving --inpaint_joints, also regenerate all descendants of each named "
-                            "joint (so naming a hip regenerates the whole leg). Enabled by default; disable "
-                            "with --no_inpaint_include_subtree.")
-    group.add_argument("--no_inpaint_include_subtree", dest="inpaint_include_subtree",
-                       action="store_false",
-                       help="Disable subtree expansion for --inpaint_joints (regenerate only the named joints).")
-    group.add_argument("--inpaint_frames", default="", type=str,
-                       help="Motion inpainting frame ranges to REGENERATE, e.g. '40-90' or '0-20,150-180' "
-                            "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
-                            "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
-                            "everything else is clamped to --reference_motion. Requires --reference_motion. "
-                            "The range is mapped onto the model's window and whether it reaches a clip end is "
-                            "judged on THAT mapped span, since the remap widens it: a range naming neither "
-                            "end of the output can still free window frame 0 or the last window frame. A span "
-                            "leaving both window ends clamped exports the run open and forces --loop off -- "
-                            "there is no closure to make, and a periodic export would resample those clamped "
-                            "ends. A span reaching a window end keeps --loop's verdict, so the model can "
-                            "close the cycle. A span freeing every window frame over every joint is rejected: "
-                            "nothing is left clamped and the reference is discarded -- use --skip_timesteps "
-                            "for whole-clip img2img instead.")
+                       help="Timesteps to skip for same-rig img2img. Higher = more faithful to reference. "
+                            "Range: 0~sampling_steps. Required with --reference_motion.")
     group.add_argument("--action_label", default="", type=str,
                        help="Text-to-motion prompt for this generation. Controlled-vocabulary "
                             "tokens ONLY, comma-separated, in the canonical order the labels use: "
@@ -775,12 +702,9 @@ def train_args():
     return parser.parse_args()
 
 
-def reference_requires_edit_options(reference_motion, skip_timesteps=None, inpaint_joints='',
-                                    inpaint_frames='', outpaint=False):
-    """True when an edit source is given without any editing options."""
-    return bool(reference_motion) and (skip_timesteps is None and not outpaint
-                                       and not str(inpaint_joints or '').strip()
-                                       and not str(inpaint_frames or '').strip())
+def reference_requires_edit_options(reference_motion, skip_timesteps=None):
+    """True when a reference is given without an explicit img2img strength."""
+    return bool(reference_motion) and skip_timesteps is None
 
 
 def generate_args(argv=None):
@@ -798,9 +722,8 @@ def generate_args(argv=None):
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
-    if reference_requires_edit_options(args.reference_motion, args.skip_timesteps,
-                                       args.inpaint_joints, args.inpaint_frames, args.outpaint):
-        parser.error('--reference_motion requires --skip_timesteps, --inpaint_* or --outpaint; '
+    if reference_requires_edit_options(args.reference_motion, args.skip_timesteps):
+        parser.error('--reference_motion requires --skip_timesteps; '
                      'use the motion autoencoder for cross-skeleton transfer')
     return args
 
