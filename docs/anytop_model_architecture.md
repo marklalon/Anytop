@@ -375,7 +375,7 @@ checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不
 ### 6.3 损失侧
 
 - `loop_wrap_loss`：loop 首尾的 rotation 闭合；
-- position step 的回绕步 `pos[0] - pos[-1]`：loop 首尾的 position 闭合，根的世界 XZ 在内，
+- position step 的回绕步 `pos[0] - pos[-1]`：loop 首尾的 position 闭合，根的世界 XYZ 在内，
   所以根轨迹的整周期闭合也由它监督。
 
 loop 路径不使用 loop-aware temporal mask。
@@ -393,7 +393,10 @@ TODO：以后训练专门的 inpaint/outpaint 模型；motion diffusion 本身�
 
 | 损失 | 约束 |
 |---|---|
-| position step | 每个关节逐帧位置步长对 GT 的 MSE（loop 样本含首尾回绕步）；根的步长是它的世界 XZ 步长，所以也监督根轨迹 |
+| position step | 每个关节逐帧位置步长对 GT 的 MSE（loop 样本含首尾回绕步）；根的步长是它的世界 XYZ 步长，所以也监督根轨迹 |
+| position acceleration | 位置误差的二阶差分，按位置步长 RMS 与物种权重归一，loop 含回绕二阶差分 |
+| root position | 根位置 XYZ 在 canonical 标准化单位下的 MSE，不按关节数摊薄、不乘物种权重 |
+| root step / root acceleration | 单独取根的 XYZ 步长及其二阶差分，单位与物种权重同 position step |
 | geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 |
 | bone vector | 父→子骨向量相对 GT 的差（同时管长度和方向），按 rest 骨长归一化（下限为 L 的一个比例），按 `alphas_cumprod[t]` 加权；每个叶子关节另加一根局部坐标系下的单位虚拟子骨，方向各向同性（`‖R_pred − R_gt‖_F / √3`），让叶子的旋转和有子关节的关节一样受约束 |
 | loop wrap | loop 首尾 rotation 闭合 |

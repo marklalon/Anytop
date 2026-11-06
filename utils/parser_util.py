@@ -227,20 +227,23 @@ def add_model_options(parser):
     group.add_argument("--lambda_dpos", default=0.04, type=float,
                        help="Weight of the frame-to-frame position-step MSE against the target, "
                             "in units of the corpus position-step RMS; a loop sample also counts its wrap "
-                            "step pos[0]-pos[-1]. The root's step is its world XZ step, so this also "
+                            "step pos[0]-pos[-1]. The root's step covers its XYZ position channels, so this also "
                             "supervises the root trajectory and a loop's closure. Scaled by the species' "
                             "dpos_loss_weight.")
+    group.add_argument("--lambda_acc", default=0.0, type=float,
+                       help="Weight of target-relative position acceleration MSE for all joints, "
+                            "in corpus position-step RMS units with species weights; includes loop wrap. "
+                            "0 disables it.")
+    group.add_argument("--lambda_root_pos", default=0.0, type=float,
+                       help="Weight of root XYZ position MSE in canonical standardized units, "
+                            "without joint-count dilution or species weights. 0 disables it.")
     group.add_argument("--lambda_root_dpos", default=0.0, type=float,
-                       help="Weight of the root's world X/Z step MSE on its own: --lambda_dpos's root "
-                            "term, same units, wrap step and species weight. In --lambda_dpos it is two "
-                            "channels among every joint's three, too little to keep the root's in-stride "
-                            "lateral/fore-aft sway, which no other joint carries. 0 disables it.")
+                       help="Weight of root XYZ position-step MSE in corpus position-step RMS units, "
+                            "with wrap steps and species weights, matching the AE. 0 disables it.")
     group.add_argument("--lambda_root_acc", default=0.0, type=float,
-                       help="Weight of the root's world X/Z acceleration MSE (the step of its step), in "
-                            "--lambda_root_dpos's units and species weight; a loop also counts the "
-                            "circular second differences across its wrap. It weighs a sway component by the "
-                            "fourth power of its frequency where --lambda_root_dpos weighs it by the square, "
-                            "so it covers the stride band of fast gaits. 0 disables it.")
+                       help="Weight of root XYZ acceleration MSE in --lambda_root_dpos's units "
+                            "and species weights; includes circular second differences on loops, "
+                            "matching the AE. 0 disables it.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for the loop-only rotation seam continuity loss on denormalized "
                             "outputs: the wrap step's rotation angle matches its neighbouring steps. A loop "

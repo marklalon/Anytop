@@ -73,6 +73,8 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --lambda_loop_wrap 0.04 ^
     --lambda_dpos 0.1 ^
     --lambda_drot 0.1 ^
+    --lambda_acc 0.05 ^
+    --lambda_root_pos 0.1 ^
     --lambda_root_dpos 0.1 ^
     --lambda_root_acc 0.1 ^
     --lambda_limb_corr 0.1 ^

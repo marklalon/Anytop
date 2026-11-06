@@ -105,6 +105,8 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 
 `MotionReconstructionLosses` 直接计算干净动作的重建监督，与 diffusion 共享动作几何损失组件，不构建 diffusion 对象，也不使用噪声时间衰减。
 
+Diffusion 同样支持 `lambda_acc`（全关节位置加速度）与 `lambda_root_pos`（根位置），两项直接复用 AE 的计算，不做噪声时间衰减。两侧根步长和根加速度均监督 XYZ，并对三个通道取平均；相较旧 diffusion 的 XZ 均值，Y 轴现在参与监督，纯 X/Z 误差的数值也随分母变化。新增权重的 CLI 默认值为零，diffusion 的全量与 tiny 训练脚本均显式开启这两项。
+
 | 监督类别 | 当前实现 |
 |---|---|
 | 基础重建 | 有效关节的 canonical 位置与旋转 MSE |

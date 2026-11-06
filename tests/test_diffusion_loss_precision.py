@@ -291,6 +291,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         lambda_drot: float = 0.0,
         drot_joint_boost: float = 0.0,
         lambda_dpos: float = 0.0,
+        lambda_acc: float = 0.0,
+        lambda_root_pos: float = 0.0,
         lambda_root_dpos: float = 0.0,
         lambda_root_acc: float = 0.0,
         lambda_bone: float = 0.0,
@@ -304,6 +306,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             lambda_drot=lambda_drot,
             drot_joint_boost=drot_joint_boost,
             lambda_dpos=lambda_dpos,
+            lambda_acc=lambda_acc,
+            lambda_root_pos=lambda_root_pos,
             lambda_root_dpos=lambda_root_dpos,
             lambda_root_acc=lambda_root_acc,
             lambda_bone=lambda_bone,
@@ -360,6 +364,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             lambda_drot=0.1,
             drot_joint_boost=3.0,
             lambda_dpos=0.5,
+            lambda_acc=0.05,
+            lambda_root_pos=0.1,
             lambda_root_dpos=0.5,
             lambda_root_acc=0.5,
         )
@@ -375,9 +381,57 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(terms["drot_loss"].dtype, torch.float32)
         self.assertEqual(terms["geodesic_loss"].dtype, torch.float32)
         self.assertEqual(terms["dpos_loss"].dtype, torch.float32)
+        self.assertEqual(terms["acc_loss"].dtype, torch.float32)
+        self.assertEqual(terms["root_pos_loss"].dtype, torch.float32)
         self.assertEqual(terms["root_dpos_loss"].dtype, torch.float32)
         self.assertEqual(terms["root_acc_loss"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
+
+    def test_acceleration_and_root_position_cli_weights_and_legacy_defaults(self):
+        from utils.parser_util import train_args
+        with patch.object(sys, 'argv', ['train', '--cond_path', 'unused.npy',
+                                      '--lambda_acc', '.05', '--lambda_root_pos', '.1']):
+            args = train_args()
+        diffusion = create_gaussian_diffusion(args)
+        self.assertEqual(diffusion.lambda_acc, .05)
+        self.assertEqual(diffusion.lambda_root_pos, .1)
+        del args.lambda_acc, args.lambda_root_pos
+        legacy = create_gaussian_diffusion(args)
+        self.assertEqual(legacy.lambda_acc, 0.)
+        self.assertEqual(legacy.lambda_root_pos, 0.)
+
+    def test_acceleration_and_root_objectives_match_ae_including_height(self):
+        from train.motion_reconstruction_losses import MotionReconstructionLosses
+        weights = dict(lambda_acc=.05, lambda_root_pos=.1,
+                       lambda_root_dpos=.2, lambda_root_acc=.3)
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE, **weights)
+        target = torch.zeros(2, 3, 9, 6)
+        target[:, :, 3] = 1.
+        target[:, :, 7] = 1.
+        kwargs = self._make_model_kwargs(2, 3, 9, 6)
+        kwargs['y']['is_loop'] = torch.tensor([True, False])
+        kwargs['y']['dpos_loss_weight'] = torch.tensor([.5, 2.])
+        prediction = target.clone()
+        prediction[:, 0, 1, 2] += 1.  # Root height alone must reach both root dynamics terms.
+        prediction[:, 1, 0, 3] += .5
+        prediction.requires_grad_()
+        terms = diffusion.training_losses(
+            lambda *args, **kw: prediction, target, torch.tensor([0, 2]),
+            model_kwargs=kwargs, noise=torch.zeros_like(target))
+        ae = MotionReconstructionLosses(**weights)(prediction, target, kwargs['y'])
+        for key in ('acc_loss', 'root_pos_loss', 'root_dpos_loss', 'root_acc_loss'):
+            self.assertEqual(terms[key].shape, (2,))
+            self.assertTrue(torch.all(terms[key] > 0))
+            torch.testing.assert_close(terms[key].mean(), ae[key])
+        torch.testing.assert_close(terms['loss'].mean(), ae['loss'])
+        terms['loss'].mean().backward()
+        self.assertTrue(torch.isfinite(prediction.grad).all())
+        self.assertGreater(prediction.grad[:, 0, 1, 2].abs().sum().item(), 0.)
+        for name in weights:
+            setattr(diffusion, name, 0.)
+        disabled = diffusion.training_losses(
+            lambda *args, **kw: prediction, target, torch.tensor([0, 2]), model_kwargs=kwargs)
+        self.assertEqual(set(disabled), {'loss', 'l_simple'})
 
     def test_rotation_step_weight_is_added_to_total_and_zero_disables_it(self):
         batch_size, joints, features, frames = 2, 3, 12, 5

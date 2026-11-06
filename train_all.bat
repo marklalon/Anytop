@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_all_v70
+set RUN_NAME=motion_diffusion_alpha_v1
 set TORCH_LOGS=recompiles,graph_breaks
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
 
@@ -58,7 +58,9 @@ pushd "%SCRIPT_DIR%"
 	--modifier_slot_drop_prob 0.15 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.1 ^
-    --lambda_drot 0.1 ^
+	--lambda_drot 0.1 ^
+	--lambda_acc 0.05 ^
+	--lambda_root_pos 0.1 ^
 	--lambda_root_dpos 0.1 ^
 	--lambda_root_acc 0.1 ^
 	--lambda_limb_corr 0.1 ^

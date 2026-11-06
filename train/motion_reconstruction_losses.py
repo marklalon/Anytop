@@ -10,7 +10,7 @@ from utils.rotation_conversions import rotation_6d_to_matrix_safe
 from utils.device_transfer import host_to_device
 from data_loaders.truebones.truebones_utils.canonical_features import (
     CANONICAL_DPOS_STD_KEY, CANONICAL_STD_KEY, DPOS_LOSS_WEIGHT_KEY,
-    PARENT_INDEX_KEY, ROOT_STAT_SLICE, ROOT_XZ_CHANNELS,
+    PARENT_INDEX_KEY, ROOT_STAT_SLICE,
     _length_scale_from_cond, get_canonical_global_stats, _view_stat_torch,
     _check_root_stats, canonical_to_physical_hml, root_relative_positions,
 )
@@ -251,11 +251,11 @@ class MotionGeometryLosses:
         error = (model_output[:, 0, :3].float() - target[:, 0, :3].float()).square()
         return error.masked_fill(~valid[:, None], 0).sum((1, 2)) / (3 * valid.sum(1)).clamp_min(1)
 
-    def root_position_step_loss(self, target, model_output, y, *, channels=ROOT_XZ_CHANNELS):
+    def root_position_step_loss(self, target, model_output, y, *, channels=(0, 1, 2)):
         """Root step MSE in corpus position-step RMS units, per sample.
 
         Shares wrap handling and species weights with position_step_loss.
-        Diffusion retains XZ by default; the AE explicitly supervises XYZ.
+        Both diffusion and AE supervise all three root position channels.
         """
         batch_size, _max_joints, _n_feats, n_frames = target.shape
         if n_frames < 2:
@@ -265,7 +265,7 @@ class MotionGeometryLosses:
         frame_weight = self._position_step_frame_weight(y, batch_size, n_frames, target.device, err.dtype)
         return self._root_weighted_mean(err, frame_weight, y)
 
-    def root_acceleration_loss(self, target, model_output, y, *, channels=ROOT_XZ_CHANNELS):
+    def root_acceleration_loss(self, target, model_output, y, *, channels=(0, 1, 2)):
         """MSE of the root's selected-axis acceleration, the step of its step, in
         :meth:`root_position_step_loss`'s units and species weight. A loop
         counts every circular second difference, an open clip only those of

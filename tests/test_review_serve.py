@@ -18,6 +18,7 @@ from data_loaders.truebones.truebones_utils.high_frequency import (  # noqa: E40
     HIGH_FREQUENCY_COND_KEY,
     bake_high_frequency_clips,
 )
+from data_loaders.truebones.truebones_utils.joint_parts import prefill_joint_parts  # noqa: E402
 
 
 def _high_frequency_stores(datasets, clips_by_dataset=None):
@@ -432,7 +433,13 @@ def test_joint_names_page_lists_species_and_their_embedding_texts(tmp_path, monk
     left, right = joints["L_FrontFoot"], joints["R_FrontFoot"]
     assert left["side"] == "left" and shown["joints"][left["twin"]]["name"] == "R_FrontFoot"
     assert right["twin"] == left["index"]
-    assert "part" not in left and "contact" not in left
+    # The page's part color mode reads ``part`` off the skeleton payload, so the
+    # prefill's verdict rides along instead of the helper fallback; the contact
+    # flag stays out of this payload.
+    prefill = prefill_joint_parts(entry)
+    assert left["part"] == prefill["L_FrontFoot"]["part"]
+    assert left["part"] != "helper"
+    assert "contact" not in left
 
 
 def test_joint_names_clips_list_only_the_species_clips_that_have_a_bvh(tmp_path, monkeypatch):

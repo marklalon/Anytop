@@ -24,7 +24,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     MODEL_CHANNELS,
     PARENT_INDEX_KEY,
     ROOT_STAT_SLICE,
-    ROOT_XZ_CHANNELS,
     _length_scale_from_cond,
     get_canonical_global_stats,
     _view_stat_torch,
@@ -248,6 +247,8 @@ class GaussianDiffusion(MotionGeometryLosses):
         lambda_drot=0.,
         drot_joint_boost=0.,
         lambda_dpos=0.,
+        lambda_acc=0.,
+        lambda_root_pos=0.,
         lambda_root_dpos=0.,
         lambda_root_acc=0.,
         lambda_loop_wrap=0.,
@@ -266,6 +267,11 @@ class GaussianDiffusion(MotionGeometryLosses):
         if not math.isfinite(self.lambda_drot) or self.lambda_drot < 0.0:
             raise ValueError(f"lambda_drot must be finite and >= 0, got {self.lambda_drot}")
         self.lambda_dpos = float(lambda_dpos)
+        self.lambda_acc = float(lambda_acc)
+        self.lambda_root_pos = float(lambda_root_pos)
+        for name in ('lambda_acc', 'lambda_root_pos'):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be finite and >= 0")
         self.lambda_root_dpos = float(lambda_root_dpos)
         self.lambda_root_acc = float(lambda_root_acc)
         self.lambda_loop_wrap = float(lambda_loop_wrap)
@@ -1322,6 +1328,17 @@ class GaussianDiffusion(MotionGeometryLosses):
                         actual_joints_fp32, y_for_decode,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_dpos * terms["dpos_loss"]
+                if self.lambda_acc > 0.:
+                    terms["acc_loss"] = self.position_acceleration_loss(
+                        target_fp32, model_output_fp32, joints_padding_mask_fp32,
+                        actual_joints_fp32, y_for_decode,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_acc * terms["acc_loss"]
+                if self.lambda_root_pos > 0.:
+                    terms["root_pos_loss"] = self.root_position_loss(
+                        target_fp32, model_output_fp32, y_for_decode,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_root_pos * terms["root_pos_loss"]
                 if self.lambda_root_dpos > 0.:
                     terms["root_dpos_loss"] = self.root_position_step_loss(
                         target_fp32, model_output_fp32, y_for_decode,
