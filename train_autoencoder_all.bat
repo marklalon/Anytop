@@ -4,7 +4,7 @@ REM Train the full-dataset autoencoder. Usage: %~nx0 [run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "AE_RUN_NAME=all_autoencoder_v2"
+set "AE_RUN_NAME=autoencoder_alpha_v1"
 if /i "%~1"=="--help" goto :usage
 if /i "%~1"=="-h" goto :usage
 if not "%~2"=="" goto :invalid_args
@@ -38,8 +38,8 @@ if not exist "dataset\cond_all.npy" (
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
     --auto_resume ^
-    --encoder_width 384 ^
-    --decoder_width 384 ^
+    --encoder_width 512 ^
+    --decoder_width 512 ^
     --encoder_layers 4 ^
     --decoder_layers 8 ^
     --encoder_ff_size 2048 ^
@@ -54,7 +54,7 @@ if not exist "dataset\cond_all.npy" (
     --latent_dim 32 ^
     --variational ^
     --kl_weight 3e-4 ^
-    --num_frames 60 ^
+    --num_frames 90 ^
     --batch_size 16 ^
     --motion_cache_size 16384 ^
     --main_process_prefetch_batches 64 ^
@@ -76,7 +76,7 @@ if not exist "dataset\cond_all.npy" (
     --lambda_bone 0.2 ^
     --lambda_limb_corr 0.1 ^
     --lambda_loop_wrap 0.1 ^
-    --num_steps 30000 ^
+    --num_steps 40000 ^
     --log_interval 100 ^
     --save_interval 1000 ^
     --eval_interval 1000
