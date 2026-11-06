@@ -24,7 +24,7 @@ from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 
 
 T5_DIM = 512
@@ -54,7 +54,7 @@ class _ProbeHead(torch.nn.Module):
 
 
 def _make_model(joint_name_drop_prob=0.0, species_cond=False, max_joints=4):
-    return AnyTop(
+    return MotionDiffusion(
         max_joints=max_joints,
         feature_len=12,
         latent_dim=8,
@@ -75,7 +75,7 @@ def _joint_struct(batch=2, joints=4):
 
 
 def _joint_cond_inputs(batch=2, joints=4, frames=3):
-    """Shapes InputProcess is called with from AnyTop.forward."""
+    """Shapes InputProcess is called with from MotionDiffusion.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
         torch.randn(batch, joints, REST_GEOM_DIM),
@@ -111,7 +111,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
 
 class JointNameDropoutTest(unittest.TestCase):
     def test_disabled_by_default(self):
-        model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
+        model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertEqual(model.joint_name_drop_prob, 0.0)
 
@@ -175,7 +175,7 @@ class JointNameDropoutTest(unittest.TestCase):
         self.assertTrue(torch.equal(joint_part, torch.zeros_like(joints)))
 
     def test_forward_derives_joint_valid_from_padding_mask(self):
-        """End to end: AnyTop.forward must read per-joint validity off the
+        """End to end: MotionDiffusion.forward must read per-joint validity off the
         padding mask's [1:, 1:] diagonal (the struct channel re-zeroes padding
         with it)."""
         model = _make_model(joint_name_drop_prob=1.0, max_joints=4)

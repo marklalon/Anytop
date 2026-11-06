@@ -71,10 +71,15 @@ def test_precise_namespaces_objects_globs_and_head_tokens():
     assert ids(selected) == {'truebones/zoo/Bee_Run.npy'}
 
 
-def test_tiny_selects_fly_or_hover_and_shake_across_datasets(dataset):
+def test_tiny_style_selects_fly_or_hover_and_shake_across_datasets(dataset):
     cond, sources, metadata, tags = dataset
-    config = load_sample_filter(Path(__file__).resolve().parents[1] / 'configs/sample_filters/tiny.json')
-    config['include'][0]['namespaces'] = ['zoo']
+    # Mirrors the structure of configs/sample_filters/tiny.json (fly/hover rule
+    # plus shake rule) without reading the file, so editing that config does
+    # not change what this test asserts.
+    config = load_sample_filter({'include': [
+        {'namespaces': ['zoo'], 'species_tags_all': ['Winged'], 'words_any': ['fly', 'hover']},
+        {'heads_any': ['shake']},
+    ], 'exclude': []})
     metadata['zoo']['Bird_1.npy'] = {'action_group': 'stationary', 'action_label': 'idle, hover'}
     metadata['zoo']['Bird_2.npy'] = {'action_group': 'locomotion', 'action_label': 'run'}
     metadata['zoo']['Bird_3.npy'] = {'action_group': 'stationary', 'action_label': 'idle'}
@@ -205,7 +210,7 @@ def test_cli_defaults_to_all_and_rejects_removed_flags(monkeypatch):
 
 
 def test_train_and_validation_default_to_all_without_inheriting_group(monkeypatch):
-    from train import train_anytop as training
+    from train import train_motion_diffusion as training
     from train import training_loop
     from utils.parser_util import train_args
     monkeypatch.setattr(sys, 'argv', ['train', '--cond_path', 'cond.npy'])
@@ -260,7 +265,7 @@ def test_real_loader_matches_legacy_flags_and_honours_the_config_file(monkeypatc
 
 
 def test_training_records_derived_group_and_refuses_changed_resume_before_overwrite(tmp_path, monkeypatch, dataset):
-    from train import train_anytop as training
+    from train import train_motion_diffusion as training
     from utils.parser_util import train_args
     source_cond = tmp_path / 'cond.npy'
     source_cond.write_bytes(b'fixture')
@@ -286,9 +291,8 @@ def test_training_records_derived_group_and_refuses_changed_resume_before_overwr
     monkeypatch.setattr(training, 'bootstrap_action_conditioning', lambda *args: None)
     monkeypatch.setattr(training, 'bootstrap_species_descriptor_table', lambda *args: None)
     monkeypatch.setattr(training, 'create_training_data_loader', lambda *args: data)
-    monkeypatch.setattr(training, 'joint_name_noise_basis', lambda *args: ())
-    model = SimpleNamespace(reference_parameter_budget=lambda: {},
-                            set_joint_name_noise_basis=lambda *args: None, to=lambda *args: None)
+    model = SimpleNamespace(parameters=lambda: [],
+                            to=lambda *args: None)
     monkeypatch.setattr(training, 'create_model_and_diffusion_general_skeleton', lambda *args: (model, None))
     monkeypatch.setattr(training, 'TrainLoop', lambda *args: SimpleNamespace(run_loop=lambda: None))
     training.run_training(args)

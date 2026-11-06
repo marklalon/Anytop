@@ -195,7 +195,6 @@ def get_dataset(
     rest_repose_max_deg=DEFAULT_REST_REPOSE_MAX_DEG,
     cond_path=None,
     species_table=None,
-    ref_encoder=False,
     joint_name_drop_prob=0.0,
 ):
     dataset = Truebones(
@@ -229,7 +228,6 @@ def get_dataset(
         rest_repose_max_deg=rest_repose_max_deg,
         cond_path=cond_path,
         species_table=species_table,
-        ref_encoder=ref_encoder,
         joint_name_drop_prob=joint_name_drop_prob,
     )
     return dataset
@@ -272,7 +270,6 @@ def get_dataset_loader(
     cond_path=None,
     joint_buckets=JOINT_BUCKETS,
     species_table=None,
-    ref_encoder=False,
     joint_name_drop_prob=0.0,
 ):
     """``num_workers``: 0 prepares batches on one background thread of this
@@ -315,9 +312,23 @@ def get_dataset_loader(
         rest_repose_max_deg=rest_repose_max_deg,
         cond_path=cond_path,
         species_table=species_table,
-        ref_encoder=ref_encoder,
         joint_name_drop_prob=joint_name_drop_prob,
     )
+    return build_dataset_loader(
+        dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
+        num_workers=num_workers, main_process_prefetch_batches=main_process_prefetch_batches,
+        batch_transform=batch_transform, joint_buckets=joint_buckets,
+    )
+
+
+def build_dataset_loader(dataset, *, batch_size, shuffle=True, drop_last=True,
+                         num_workers=0, main_process_prefetch_batches=0,
+                         batch_transform=None, joint_buckets=JOINT_BUCKETS):
+    """Shared sampler, bucket collate and prefetch pipeline for an existing dataset.
+
+    Configure dataset augmentation before calling: persistent workers receive
+    their own copy. get_dataset_loader delegates here as well.
+    """
     collate = truebones_batch_collate
     sampler = None
     # A weighted sampler is needed once any head word can be weighted

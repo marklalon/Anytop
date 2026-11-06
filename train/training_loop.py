@@ -1,5 +1,4 @@
 import functools
-import math
 import os
 import re
 import json
@@ -27,13 +26,14 @@ from utils.model_util import (
     bind_checkpoint_action_conditioning,
     build_checkpoint_payload,
     load_checkpoint_weights,
-    unwrap_anytop_model,
+    unwrap_motion_diffusion_model,
 )
 import random
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.data.dataset import EmptySplitError
 from data_loaders.truebones.truebones_utils.param_utils import JOINT_BUCKETS
 from train.sample_loss_limit import SampleLossLimiter
+from utils.lr_schedule import cosine_decay_lr_lambda
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -123,27 +123,6 @@ def build_optimizer_param_groups(named_params, weight_decay: float):
     if no_decay:
         groups.append({'params': no_decay, 'weight_decay': 0.0})
     return groups
-
-
-def cosine_decay_lr_lambda(lr, lr_final, decay_start, num_steps):
-    """LambdaLR multiplier: constant 1.0 up to ``decay_start``, then a cosine
-    decay reaching ``lr_final / lr`` at ``num_steps``. ``decay_start=None`` keeps
-    the LR constant for the whole run (WSD without the decay phase)."""
-    if decay_start is None:
-        return lambda step: 1.0
-    if not 0 <= decay_start < num_steps:
-        raise ValueError(f"--lr_decay_start {decay_start} must lie in [0, num_steps={num_steps})")
-    if not 0 <= lr_final <= lr:
-        raise ValueError(f"--lr_final {lr_final} must lie in [0, lr={lr}]")
-    floor = lr_final / lr
-    span = num_steps - decay_start
-
-    def multiplier(step):
-        if step < decay_start:
-            return 1.0
-        t = min((step - decay_start) / span, 1.0)
-        return floor + 0.5 * (1.0 - floor) * (1.0 + math.cos(math.pi * t))
-    return multiplier
 
 
 class TrainLoop:
@@ -309,7 +288,6 @@ class TrainLoop:
                 shuffle=False,
                 drop_last=False,
                 action_label_cond=getattr(self.args, 'action_label_cond', False),
-                ref_encoder=getattr(self.args, 'ref_encoder', False),
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
                 species_table=getattr(self.args, 'species_descriptor_table', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
@@ -358,7 +336,7 @@ class TrainLoop:
         symbolic-shape graph that gives up the shape-specialised fusions. The
         only other shape that could vary is a trailing partial batch (drop_last
         is always True, avoiding the one extra compile). The numpy/.item()
-        conditioning in AnyTop.forward triggers graph breaks, but the heavy
+        conditioning in MotionDiffusion.forward triggers graph breaks, but the heavy
         decoder region between breaks still compiles and fuses.
         """
         try:
@@ -448,7 +426,7 @@ class TrainLoop:
         buffer-level half is bind_checkpoint_action_conditioning, which can only
         run once those buffers ARE the checkpoint's.
         """
-        if not getattr(unwrap_anytop_model(self.model), 'action_label_cond', False):
+        if not getattr(unwrap_motion_diffusion_model(self.model), 'action_label_cond', False):
             return
         action_conditioning = (metadata or {}).get('action_conditioning') or {}
         bundle = getattr(self.args, 'action_conditioning', None)
@@ -555,8 +533,7 @@ class TrainLoop:
         return batch.to(self.device, non_blocking=self.non_blocking)
 
 
-
-    # Read only by the host-side joint-mask sampler (AnyTop.sample_subtree_joint_mask_train):
+    # Read only by the host-side joint-mask sampler (MotionDiffusion.sample_subtree_joint_mask_train):
     # moving it to the device just to read it back cost a stream sync per step.
     HOST_ONLY_COND_KEYS = ('joint_mask_limb_roots',)
 
@@ -708,24 +685,14 @@ class TrainLoop:
         and unweighted (the caller draws ``t`` stratified-uniform, which needs
         no importance weights).
         """
-        ref_enabled = bool(getattr(unwrap_anytop_model(model), 'ref_encoder', False))
-        null_cond = cond
-        if ref_enabled:
-            null_cond = dict(cond, y=dict(cond['y'], ref_active=torch.zeros(
-                batch.shape[0], dtype=torch.bool, device=batch.device)))
         with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
                 model,
                 batch,
                 t,
-                model_kwargs=self._with_train_step(null_cond, self.total_step()),
+                model_kwargs=self._with_train_step(cond, self.total_step()),
                 noise=noise,
             )
-            if ref_enabled:
-                ref_losses = self.diffusion.training_losses(
-                    model, batch, t, model_kwargs=self._with_train_step(cond, self.total_step()), noise=noise)
-                losses.update({'reference_' + key: value for key, value in ref_losses.items()
-                               if key not in self.TRAIN_ONLY_LOSS_KEYS})
         # part_loss covers only joints whose name was dropped, and eval drops none.
         return {
             key: value.detach().float().mean()
@@ -1229,8 +1196,6 @@ class TrainLoop:
         return pjoin(self.args.save_dir, models[max(models)]) if models else None
 
 
-
-
     def _get_checkpoint_step_numbering(self, checkpoint_path: str) -> str:
         args_path = pjoin(os.path.dirname(checkpoint_path), 'args.json')
         if not os.path.exists(args_path):
@@ -1262,5 +1227,3 @@ def get_blob_logdir():
     # You can change this to be a separate path to save checkpoints to
     # a blobstore or some external drive.
     return logger.get_dir()
-            
-

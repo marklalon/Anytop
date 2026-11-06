@@ -28,7 +28,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     build_joint_struct_features,
 )
 from data_loaders.truebones.truebones_utils.param_utils import FEATS_LEN  # noqa: E402
-from model.anytop import InputProcess  # noqa: E402
+from model.motion_diffusion import InputProcess  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
 
 

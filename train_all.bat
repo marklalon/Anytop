@@ -6,13 +6,13 @@ set RUN_NAME=merged_all_v70
 set TORCH_LOGS=recompiles,graph_breaks
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
 
-REM train_anytop requires bundled TinyCC for --compile, overriding inherited CC.
+REM train_motion_diffusion requires bundled TinyCC for --compile, overriding inherited CC.
 REM Inductor C++ codegen is disabled; no Visual Studio environment is needed.
 REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
 
 pushd "%SCRIPT_DIR%"
 
-"%PYTHON_EXE%" train/train_anytop.py ^
+"%PYTHON_EXE%" train/train_motion_diffusion.py ^
 	--cond_path dataset/cond_all.npy ^
 	--save_dir save/%RUN_NAME% ^
 	--save_interval 10000 ^
@@ -33,12 +33,6 @@ pushd "%SCRIPT_DIR%"
 	--action_adaln_bottleneck 64 ^
 	--species_film_bottleneck 64 ^
 	--species_cond ^
-	--ref_encoder ^
-	--ref_slots 2 ^
-	--ref_dim 8 ^
-	--ref_width 256 ^
-	--ref_layers 2 ^
-	--ref_cfg_drop_prob 0.6 ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
 	--topology_aug_prob 0.2 ^

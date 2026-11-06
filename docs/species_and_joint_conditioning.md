@@ -6,7 +6,7 @@
 
 ## 1. 总览
 
-输入层 `InputProcess`（[anytop.py](../model/anytop.py)）为每个 `(帧, 关节)` 生成一个 latent token，由四部分相加：
+输入层 `InputProcess`（[motion_diffusion.py](../model/motion_diffusion.py)）为每个 `(帧, 关节)` 生成一个 latent token，由四部分相加：
 
 ```
 token(frame, joint) =  运动投影(该帧该关节的特征)          # 帧 0 为 rest pose 的投影
@@ -36,7 +36,7 @@ species code **只**通过“对关节名嵌入做 FiLM”进入模型，不进�
 - **body plan**（必填）：封闭词表 `SPECIES_BODY_PLANS`（Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged / Drifting）。
 - **variant**（可选）：封闭词表 `SPECIES_VARIANTS`（Clanking / Fluttering / Waddling）。它表示整个物种都有、且帧数调不出来的运动风格：机械的僵硬节拍、短腿左右摇摆、快速浅幅振翅。按 body plan 默认方式运动的物种不写 variant。
 
-步态快慢不进描述符，也不进 action_label：由 `--num_frames`（循环周期）决定；要指定某种具体步态，用 reference motion。翅膀状态里只有 `glide`（滑翔，翅膀不动）留作逐 clip 的 action_label 修饰词；拍翅是 `fly` 的默认，不写词。
+步态快慢不进描述符，也不进 action_label：由 `--num_frames`（循环周期）决定；要迁移某种具体步态，使用 motion autoencoder。翅膀状态里只有 `glide`（滑翔，翅膀不动）留作逐 clip 的 action_label 修饰词；拍翅是 `fly` 的默认，不写词。
 
 variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个物种有任一 clip 呈现该风格，整个物种就带这个 variant。同一物种只能有一个 variant。
 
@@ -74,7 +74,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 `--species_tags Quadruped` 用描述符表算出的 species code **替换**目标物种自己的 `species_code`，从而重新"着装"：例如让 Winged 的龙按四足方式运动；`--species_tags Biped,Clanking` 让人形按机械方式走。
 
-- variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱；跨骨架迁移动作风格用 `--reference_motion`；
+- variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱；跨骨架迁移动作风格用 motion autoencoder；
 - 相似度（skeleton_similarity / reference_bank / clip_length_prior）只比较 body plan，不看 variant；
 
 - 要求 checkpoint 以 `--species_cond` 训练；
@@ -114,7 +114,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 | `--joint_name_drop_prob` | **整个关节**的名字行清零 | 训练模型在"不知道这是什么关节"时回退到 rest pose、graph 距离、关系矩阵与结构通道；防止某个罕见 token 单点翻转整条肢体的运动先验。无 1/(1−p) 缩放（被隐藏的行不是一个被稀疏化的向量） |
 | `--dropout_prob` | 名字向量**逐元素** | 常规正则，不改变关节身份 |
 
-整关节 drop 抽样在 `AnyTop._sample_joint_name_drop`，写成纯张量比较（无 `.any()` 分支），不破坏 compile / cudagraph；评估与推理从不 drop。
+整关节 drop 抽样在 `MotionDiffusion._sample_joint_name_drop`，写成纯张量比较（无 `.any()` 分支），不破坏 compile / cudagraph；评估与推理从不 drop。
 
 ---
 
@@ -141,20 +141,16 @@ name_vec  = text_embedding( modulated )                                  # Linea
 - **零初始化**：输出层权重与偏置为零，起点是 identity（gamma = 1, beta = 0）；模型只需学"偏离"。
 - MLP 在 fp32 下运行（`run_in_fp32`）。
 
-### 4.2 激活规则：无参考即开，有参考即关
+### 4.2 激活规则
 
-- species FiLM 在**每个没有生效参考的行上都开启**，在**每个参考生效的行上整条 bypass**（关节名嵌入原样进入 `text_embedding`），训练与推理相同。它没有自己的 CFG drop，也没有 null 模式。
-- 训练里被 `--ref_cfg_drop_prob` 丢掉参考的行因此带 species。这让同一骨架、同一 label、不同 body plan 的样本（如 `SYN_Dog` Biped 与 zoo `Dog` Quadruped）在无参考时靠 species code 区分，带参考时靠参考区分。
-- reference CFG 的无参考分支因此是"目标骨架自身 species 下、无 label 的先验"，guidance 从它推向参考。
-- 推理没有 species 开关，也没有 species CFG；`--species_tags` 只作用于无参考的前向。
-
-注意：per-joint FiLM 是 species 的**唯一**通道，bypass 即完全无 species。
+启用 `--species_cond` 时，species FiLM 在所有训练和推理行上开启，没有自己的 CFG drop 或 null 模式。
+推理的 `--species_tags` 可覆盖描述符，包括 img2img、inpaint 与 outpaint 编辑。
 
 ### 4.3 species 通路的作用边界
 
 关节名、拓扑边关系、rest pose、骨长已经让模型看到相当完整的骨架信息；body plan 在很大程度上是这些信息的**有损摘要**，因此 species 的作用是**风格偏置**（步态节奏、能量、跨关节协调），而不是骨架识别。描述符碰撞（同描述符的物种拿到同一个向量）进一步限制了它能区分的程度——但 FiLM 因关节名不同，仍能区分共用同一描述符的两个物种，加性做法做不到。评估 species 效果时应挑**描述符互不相同**的物种做对照。
 
-variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fluttering 物种都是昆虫）。模型可以从 tag 学到它，也可以从骨架学到它，二者预测力相同，所以 tag 不能把这种风格迁移到别的骨架；这种迁移由参考动作完成。
+variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fluttering 物种都是昆虫）。模型可以从 tag 学到它，也可以从骨架学到它，二者预测力相同，所以 tag 不能把这种风格迁移到别的骨架；这种跨骨架动作迁移由 motion autoencoder 完成。
 
 ---
 
@@ -162,7 +158,7 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 
 关节名只应当携带"身体部位"语义。"这个关节在骨架中的位置"由**纯几何 / 拓扑**的结构特征给出，只读 `parents` 与物理 rest 位置，**不读任何关节名、不读触地信号**（触地是启发式猜测，把它作为条件等于把它的错误交给模型）。因此重命名骨架不会改变它。
 
-[joint_struct_features.py](../data_loaders/truebones/truebones_utils/joint_struct_features.py) 的 `JOINT_STRUCT_FEATURE_NAMES` 给出每个关节的特征：沿无分叉链的位置（`depth_norm` / `run_len_inv`）、是否叶子、子树规模的 log2 分桶（不除以 J）、同级排序与同级数量、左右侧符号 `side`（-1 / 0 / +1，左 ≠ 右）。只含拓扑与侧别；rest 几何只经 `rest_geometry` 进入模型：参考编码器读 rest 上的骨向 + 高度，主干读同样的骨向 + 高度再加骨长（/L）。
+[joint_struct_features.py](../data_loaders/truebones/truebones_utils/joint_struct_features.py) 的 `JOINT_STRUCT_FEATURE_NAMES` 给出每个关节的特征：沿无分叉链的位置（`depth_norm` / `run_len_inv`）、是否叶子、子树规模的 log2 分桶（不除以 J）、同级排序与同级数量、左右侧符号 `side`（-1 / 0 / +1，左 ≠ 右）。只含拓扑与侧别；rest 几何只经 `rest_geometry` 进入模型：共享静态骨架通道读取 rest 上的骨向、高度及骨长（/L）。
 
 - 训练与生成**必须**调用同一个 `build_joint_struct_features`，从 cond 条目现场计算，不写进 `cond.npy`，否则两边会对同一骨架给出不同条件。
 - 经 `struct_embedding`（MLP）投影后加到 token 上；**常规初始化，不是零初始化**——它要从第一步就携带信号。
@@ -178,7 +174,7 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 
 1. 取 `joints_names_embs` 行；按 `joint_name_drop_prob` 决定整行是否清零。
 2. 复制一份作 FiLM 输入（`joints_clean`）；另一份做逐元素 dropout。
-3. 若 `species_cond`：用 `concat[joints_clean, species_code]` 算 gamma / beta，调制 dropout 后的名字；若该样本带生效参考，则取未调制的名字。
+3. 若 `species_cond`：用 `concat[joints_clean, species_code]` 算 gamma / beta，调制 dropout 后的名字。
 4. `text_embedding` 把名字向量投到 `latent_dim`，加到该关节的运动 token 上。
 5. 加结构通道（padding 行清零后）与帧位置编码。
 
@@ -211,7 +207,7 @@ padding 行与"无名字"行同为零向量；是否为真实关节由 attention
 
 | 内容 | 位置 |
 |---|---|
-| 输入装配、FiLM、整关节 drop、species 激活逻辑 | [`model/anytop.py`](../model/anytop.py)（`InputProcess`、`AnyTop.forward` 的 species 激活、`_sample_joint_name_drop`） |
+| 输入装配、FiLM、整关节 drop、species 激活逻辑 | [`model/motion_diffusion.py`](../model/motion_diffusion.py)（`InputProcess`、`MotionDiffusion.forward` 的 species 激活、`_sample_joint_name_drop`） |
 | 描述符词表、`species_tags.jsonl` 读取与校验 | [`dataset_tags.py`](../data_loaders/truebones/truebones_utils/dataset_tags.py) |
 | 描述符表（构建、绑定、查表）、species code | [`species_descriptor_table.py`](../data_loaders/truebones/truebones_utils/species_descriptor_table.py) |
 | 关节名文本生成与 T5 烘焙、未见名字置空 | [`joint_embedding_text.py`](../data_loaders/truebones/truebones_utils/joint_embedding_text.py)、[`joint_name_canonical.py`](../data_loaders/truebones/truebones_utils/joint_name_canonical.py) |

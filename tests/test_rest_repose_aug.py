@@ -17,7 +17,7 @@ from data_loaders.truebones.truebones_utils.features import (
 )
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
 from data_loaders.reference import (
-    REST_GEOM_COLUMNS, REST_POSE_COLUMNS, prepare_reference_sample, rest_geometry,
+    REST_GEOM_COLUMNS, rest_geometry,
 )
 from data_loaders.truebones.data.dataset import MotionDataset
 from motion_lib.Animation import rotations_global
@@ -170,16 +170,6 @@ def test_eval_rejects_random_rests(split):
                     rest_repose_prob=.2, cond_path=str(cond_path))
 
 
-def test_reference_keeps_the_stored_structural_channel():
-    motion, cond, metadata = fixture()
-    stored = build_joint_struct_features(cond)
-    opt = SimpleNamespace(rest_repose_prob=1., rest_repose_max_deg=40.)
-    random.seed(2)
-    sample = prepare_reference_sample(motion, cond, metadata, opt, shared=dict(joint_struct=stored))
-    np.testing.assert_array_equal(sample['joint_struct'], stored)
-    assert not np.allclose(sample['rest_pose'], rest_geometry(cond)[:, REST_POSE_COLUMNS])
-
-
 def test_canonical_features_are_rest_invariant():
     from data_loaders.truebones.truebones_utils.canonical_features import physical_hml_to_canonical
     motion, cond, metadata = fixture()
@@ -232,16 +222,6 @@ def test_canonical_rotation_is_exact_where_frames_follow_the_parent():
         np.testing.assert_allclose(
             physical_hml_to_canonical(new_motion, new_cond)[..., 3:9], base, atol=1e-4, err_msg=str(seed))
     assert applied
-
-
-def test_reference_keeps_the_structural_channel_across_bone_lengths():
-    motion, cond, metadata = fixture()
-    stored = build_joint_struct_features(cond)
-    opt = SimpleNamespace(bone_length_aug_prob=1., bone_length_aug_max=.5, bone_length_aug_min=.4)
-    random.seed(0)
-    sample = prepare_reference_sample(motion, cond, metadata, opt, shared=dict(joint_struct=stored))
-    np.testing.assert_array_equal(sample['joint_struct'], stored)
-    assert not np.allclose(sample['rest_pose'], rest_geometry(cond)[:, REST_POSE_COLUMNS])
 
 
 def test_bent_limbs_stay_on_their_side():

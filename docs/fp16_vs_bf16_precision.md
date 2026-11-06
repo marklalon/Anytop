@@ -245,7 +245,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 | A | cross-K 子路做成 fp32 孤岛 | [motion_transformer.py](../model/motion_transformer.py) `CrossLimbTemporalBlock.forward` |
 | B | GradScaler 的 loss scale 封顶并从 2^15 开始，并记录 `amp_overflow` | [fp16_util.py](../diffusion/fp16_util.py) `GRAD_SCALER_MAX_SCALE`、`_cap_loss_scale`、`_optimize_amp` |
 | C | scaler 溢出与真实梯度尖峰分开分类、分开限额、分开文件名 | [training_loop.py](../train/training_loop.py) `classify_grad_event`、`AMP_OVERFLOW_MAX_DUMPS`、`_maybe_capture_spike` |
-| D | 广播型条件头固定 fp32 | [anytop.py](../model/anytop.py) `run_in_fp32` + 8 处调用 |
+| D | 广播型条件头固定 fp32 | [motion_diffusion.py](../model/motion_diffusion.py) `run_in_fp32` + 8 处调用 |
 
 - **A**：`cross_k_scale` 是模型里唯一一个背后挂着整张子网络的零初始化门（其余 `time_emb_scale` / `temporal_phase_scale` / `*_reliability_bias` 只门住一个加法项，门自身的梯度并不小）。子路只有 K 个 token、瓶颈宽度，fp32 实测 0 成本。
 - **B**：当前 `GradScaler` 显式以 2^15 初始化并封顶，避免新 run 在第一步探测 2^16；真正溢出时仍会下降。**恢复旧 run 时**保存的更高 scale 会在第一次 optimizer update 后被拉回 2^15（并重置 growth tracker）。

@@ -38,7 +38,7 @@ TOPOLOGY_AUG_MIN_UNITS = 1
 TOPOLOGY_AUG_MAX_UNITS = 3
 # Largest forward-kinematics residual of a merged bone, relative to its rest
 # length, on any frame.
-CHAIN_MERGE_MAX_RESIDUAL = 0.1
+CHAIN_MERGE_MAX_RESIDUAL = 0.2
 
 
 def validate_topology_aug(probability):

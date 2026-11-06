@@ -4,7 +4,7 @@
 > **周期混叠**（一个周期没结束，新周期已经开始，表现为某个肢体按双倍频率运动）和
 > **速度时快时慢**。
 > 相关代码：`data_loaders/truebones/data/dataset.py`（loop roll / tile / 窗口重采样）、
-> `model/anytop.py`（绝对帧 PE、tempo PE）、`model/motion_transformer.py`（`circular_phase_embedding`）、
+> `model/motion_diffusion.py`（绝对帧 PE、tempo PE）、`model/motion_transformer.py`（`circular_phase_embedding`）、
 > `sample/output_lengths.py`、`utils/clip_length_prior.py`（自动长度）。
 
 ---
@@ -51,7 +51,7 @@
 | 相位锁定 loop（`loop_is_phase_free` 为假） | 固定为 1（这类 loop 不做 roll / tile） |
 | `loop_uncond`（loop clip 按开放 clip 训练，content 可能已 tile）、超长被裁剪的 loop、非 loop | 不定义，走开放窗口路径 |
 
-k 不做训练时 drop。参考动作激活的行（`ref_active`）在训练和推理里都把 k 读作 1（§3.3）。
+k 不做训练时 drop。
 
 **k 的训练分布**：`_sample_loop_tile_count` 保证 `k · P_s ≤ max_source_length`（`P_s` 为变速后的 clip 长度；
 预算对普通 clip 是 `MAX_SOURCE_FRAMES_MULT · T`，对高频 clip 是 `T`），k=1 的概率至少为 `loop_tile_single_prob`。
@@ -97,7 +97,7 @@ loop 样本不再用 tempo 斜坡 `i·L/T`，改为每帧相同的嵌入，内�
 依据：
 
 - **没有信息损失。** 相对时间已经由 §3.1 的循环表给出，T 固定，k 由表的周期给出，所以 `L = k · (L/k)` 可以还原。
-  `L/k` 不是新的速度条件，只是把已经给出的时长按周期数做了归一化。tempo drop 的行例外，见本节末尾。
+  `L/k` 不是新的速度条件，只是把已经给出的时长按周期数做了归一化。
 - **`L/k` 直接就是模型要学的量。** 同一物种的 loop 在训练里的 `L/k` 就是变速后的周期 `P_s`，
   落在 `P̂/1.3 … 1.3·P̂` 内（`motion_speed_aug=1.3`），与 tile 数无关。因此「物种 + `L/k`」能直接对应到步速。
   斜坡把同一信息拆成「每帧递增多少」，并且和 tile 数混在一起。
@@ -106,10 +106,9 @@ loop 样本不再用 tempo 斜坡 `i·L/T`，改为每帧相同的嵌入，内�
   loop 行的输入是一个每帧相同的周期长度，速度体现在它的绝对值里。共用一个逐帧 MLP 时，同一个输入值 30
   在两种行里含义不同，只能靠下游从 PE 类型去分辨。独立投影只多一组 2·D² 参数，就消除了这个歧义。
 
-tempo drop 不变：drop 的行把输出乘以 `tempo_active`，`loop_period_projection` 的输出也乘以同一个 `tempo_active`。
-tempo drop 只在训练时触发，作为正则；推理始终给出 L，没有 tempo CFG。drop 的行真的丢了 L：
-§3.1 的循环表不受 tempo drop 影响，模型仍知道窗口里有 k 个周期、每个占 T/k 帧，
-只是不知道一个周期对应多少源帧，步速只能从物种和 label 的先验推断。
+训练和推理始终保留 tempo 条件，`tempo_projection` 和 `loop_period_projection` 的输出都不丢弃。
+训练和推理始终给出 L，没有 tempo CFG。§3.1 的循环表提供每个周期占 T/k 帧的信息，
+tempo 条件提供每个周期对应多少源帧的信息。
 
 ### 3.3 k 只作为周期进入模型
 
@@ -120,15 +119,9 @@ k 没有自己的 token：它只是 §3.1 循环表的周期 `T/k` 和 §3.2 loo
 
 训练：k 来自 batch 里已有的 `y['loop_tile_count']`（也用于诊断和 temporal-span 掩码），只在 loop 条件生效的行使用。
 
-参考动作激活的行把 k 读作 1，训练和推理相同，与 action label、species FiLM 在这些行被绕过一致：
-参考动作给出动作内容，周期也由它自己决定。训练里参考与目标共用一条时间轴、一起 tile，
-z 逐帧对齐，k 份拷贝的结构由 z 给出。这些行的表和 tempo 按一个周期算，即使内容已 tile k 份；
-如果训练时 ref 行能看到 k，模型会靠 k 抄近路而不读 z。
-
 ### 3.4 不改的部分
 
 - 开放窗口（包括 `loop_uncond`）：绝对帧 PE 和 tempo 斜坡保持原样。
-- 参考动作编码器（`motion_encoder`）的时间编码：本方案不涉及。
 - 损失函数：不新增；wrap 相关损失照旧。
 - temporal-span 掩码：已经按 `loop_tile_count` 的周期重复，不变。
 
@@ -163,11 +156,11 @@ z 逐帧对齐，k 份拷贝的结构由 z 给出。这些行的表和 tempo 按
   从未按 loop 训练过。例如 Horse 给 `--loop_cycles 4`，L≈124，速度正常，但超过了 120。
 - 相位锁定的 label 只允许 k=1，给出更大的 k 直接报错（训练时这类 loop 从未拼接过）。
 
-参考动作路径（encode / 编辑 / outpaint）：N 默认取参考长度 R，k 一律为 1，给出 `--loop_cycles` 直接报错。
+采样器编辑路径（img2img / inpaint / outpaint）：N 默认取参考长度 R，k 一律为 1，给出 `--loop_cycles` 直接报错。
 
 - 推理时假定参考动作都不在训练集里，它有几个周期并不知道，窗口里的周期由参考决定：默认的拟合把整条参考
   重采样到 N 帧，只改速度、不复制周期；`--outpaint` 追加的帧从噪声生成，周期数也不确定。
-- 参考动作激活的行在模型里本来就把 k 读作 1（§3.3）；没有 ref encoder 的 img2img / inpaint 同样给 1，规则统一。
+- 编辑时由采样器传入 k=1，模型按常规 loop 条件读取。
 
 非 loop 生成不涉及 k。
 
@@ -212,14 +205,13 @@ z 逐帧对齐，k 份拷贝的结构由 z 给出。这些行的表和 tempo 按
    开放窗口不给 k。
 2. 模型：
    - loop 行的输入层用循环表（周期 `T/k`）替换绝对帧 PE，按 `[T, B, D]` 计算；每层循环相位用同一张表；
-   - loop 行的 tempo 改为 `L/k` 经 `loop_period_projection` 的每帧相同嵌入，乘以 `tempo_active`；
-   - 参考动作激活的行把 k 读作 1。
+   - loop 行的 tempo 改为 `L/k` 经 `loop_period_projection` 的每帧相同嵌入，始终保留；
 3. 推理：`--loop_cycles`（正整数）、§4 的长度与 k 解析规则（普通 label 用 log 最近整数，高频 label 向下取整）、
    速度范围和源帧预算警告、相位锁定 label 的检查、参考路径的 k 一律为 1。
 4. bump `CKPT_VERSION`；更新 `docs/anytop_model_architecture.md` 中 loop 相关章节，
    以及 `circular_phase_embedding` 的 docstring（它现在写的是「不替换绝对 PE、不编码周期数」）。
 5. 测试：
    - k 整除 T 时，k 份 tile 的窗口在 T/k 循环表下各份编码逐位一致；k 与 T 互素时，编码是 k=1 表的行置换；
-   - 参考动作激活的行 k 读作 1，开放行不读 k；
-   - tempo drop 的行，`loop_period_projection` 的输出为零；
+   - 开放行不读 k；
+   - 训练和推理都始终保留 `loop_period_projection` 的输出；
    - §4 的推理解析表逐行覆盖，包括高频 label 向下取整和两种警告。

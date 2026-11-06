@@ -171,7 +171,7 @@ def test_cond_t5_name_reads_the_joint_name_encoder():
 def test_species_tags_override_reads_the_table(monkeypatch):
     table = _table([("Biped",), ("Winged",)])
     model = SimpleNamespace(species_cond=True)
-    monkeypatch.setattr(conditioning, "unwrap_anytop_model", lambda m: m)
+    monkeypatch.setattr(conditioning, "unwrap_motion_diffusion_model", lambda m: m)
     cond = {"a/Dragon": {"species_emb_meta": {"embedding_text": "Winged"}}}
 
     args = SimpleNamespace(species_tags="biped")

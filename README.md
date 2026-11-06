@@ -33,6 +33,16 @@ under `docs/` may describe superseded intermediate states.
 - **LR schedule** — Constant LR by default; `--lr_decay_start N` adds a cosine decay from `--lr` to `--lr_final` (default 1e-5) that ends at `--num_steps`.
 - **Rare head-word floor** — `--rare_head_word_floor 20 --rare_head_word_max_boost 4` gives every rare action word a minimum sampling share; `--head_word_weights stop=3` is an explicit per-word multiplier on top. Draws are otherwise uniform over clips.
 
+### Motion Autoencoder
+
+The standalone AE/VAE supports motion reconstruction and cross-skeleton transfer.
+Motion diffusion uses action labels and skeleton conditions; it has no reference-motion encoder.
+Its `--reference_motion` option is limited to same-rig img2img/inpaint/outpaint editing and requires an editing option.
+See [docs/motion_autoencoder.md](docs/motion_autoencoder.md) for its architecture and training objective.
+Train with `train_tiny_autoencoder.bat [run_name]` or `train_all_autoencoder.bat [run_name]`;
+evaluate with `eval_autoencoder.bat --npy <preprocessed_motion.npy>`.
+The training presets retain the variational bottleneck and resume from the selected run.
+
 ### Evaluation
 - **Motion Quality Scorer** — Reference-calibrated evaluation without autoencoders or discriminators: physical plausibility (bone rigidity, smoothness, continuity) and data-prior conformity (limb symmetry, coordination, tempo) against real clips of the action.
 - **Training Sample Selection** — Training uses all eligible clips in the selected split by default. Optional `--sample_filter` JSON rules combine datasets, object types, species tags, action heads and exact clips. The old training flags `--dataset_namespaces`, `--objects_subset` and `--action_group` are removed. The checkpoint records its effective groups as training metadata; generation ignores these fields and matches label-based length priors across all groups. See [docs/sample_filter.md](docs/sample_filter.md).
@@ -168,7 +178,7 @@ train_all.bat
 To train a single group or another clip combination, supply a filter file; see
 [docs/sample_filter.md](docs/sample_filter.md). The full argument set of
 the current run lives in that script; every flag is a plain CLI option of
-`python train/train_anytop.py --help`.
+`python train/train_motion_diffusion.py --help`.
 
 ## Acknowledgments
 We want to thank the following contributors that our code is based on:

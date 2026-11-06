@@ -56,7 +56,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from sample.generation_runtime import prepare_generation_runtime
-from utils.model_util import unwrap_anytop_model
+from utils.model_util import unwrap_motion_diffusion_model
 from utils.parser_util import generate_args
 
 # Reverse mapping: object_type → objects_subset name (e.g. "Horse" → "quadruped")
@@ -121,7 +121,7 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
     np.random.seed(seed)
     motion_dataset = dataset.motion_dataset
 
-    model = unwrap_anytop_model(runtime.model)
+    model = unwrap_motion_diffusion_model(runtime.model)
     model.eval()
     diffusion = runtime.diffusion
     decoder_layers = model.seqTransDecoder.layers

@@ -6,6 +6,7 @@ REM
 REM Usage:
 REM   eval_checkpoint.bat <task_config.json> [extra eval args]
 REM   eval_checkpoint.bat eval\eval_tasks.json --overwrite
+REM   eval_checkpoint.bat eval\eval_tasks.json --no_review
 REM   eval_checkpoint.bat <task_config.json> --kill-all-serve [extra eval args]
 REM     Stop all Python serve_report.py processes first, then run the evaluation.
 REM   eval_checkpoint.bat --kill-all-serve

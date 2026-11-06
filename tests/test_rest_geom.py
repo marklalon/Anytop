@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import data_loaders.truebones.data.dataset as dataset_module  # noqa: E402
 from data_loaders.reference import (  # noqa: E402
-    REST_GEOM_COLUMNS, REST_GEOM_DIM, REST_GEOMETRY_DIM, REST_POSE_COLUMNS, reference_pose, reference_sample, rest_geometry,
+    REST_GEOM_COLUMNS, REST_GEOM_DIM, REST_GEOMETRY_DIM, REST_POSE_COLUMNS, reference_pose, rest_geometry,
 )
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     _length_scale_from_cond, rest_pos_from_cond,
@@ -75,24 +75,20 @@ def test_leaf_drop_rebuilds_rest_geom(monkeypatch):
 
 def test_rest_geom_drop_is_training_only():
     model = _make_model()
-    model.rest_geom_drop_prob = model.rest_geom_joint_drop_prob = 1.0
+    model.rest_geom_joint_drop_prob = 1.0
     model.eval()
     assert model._sample_rest_geom_drop(2, 4, torch.device('cpu')) is None
     model.train()
     assert bool(model._sample_rest_geom_drop(2, 4, torch.device('cpu')).all())
-    model.rest_geom_drop_prob = model.rest_geom_joint_drop_prob = 0.0
+    model.rest_geom_joint_drop_prob = 0.0
     assert model._sample_rest_geom_drop(2, 4, torch.device('cpu')) is None
 
 
 def test_rest_geom_drop_rates():
     model = _make_model().train()
-    model.rest_geom_drop_prob, model.rest_geom_joint_drop_prob = 0.0, 0.5
+    model.rest_geom_joint_drop_prob = 0.5
     torch.manual_seed(0)
     assert abs(float(model._sample_rest_geom_drop(256, 8, torch.device('cpu')).float().mean()) - 0.5) < 0.05
-    model.rest_geom_drop_prob, model.rest_geom_joint_drop_prob = 0.5, 0.0
-    drop = model._sample_rest_geom_drop(256, 8, torch.device('cpu'))
-    # Whole-sample drop: every joint of a row agrees.
-    assert torch.equal(drop, drop[:, :1].expand_as(drop))
 
 
 def test_dropped_joints_read_as_absent():
@@ -150,15 +146,3 @@ def test_rest_geometry_columns():
     length = np.linalg.norm(rest[child] - rest[parents[child]], axis=-1) / float(_length_scale_from_cond(cond))
     np.testing.assert_allclose(denoiser[child, -1], length, atol=1e-6)
     np.testing.assert_array_equal(denoiser[parents < 0, -1], 0)
-
-
-def test_reference_reuses_the_shared_geometry():
-    dataset, _ = _plain_dataset()
-    cond = dataset.cond_dict['test']
-    motion = np.zeros((4, len(cond['parents']), 12), np.float32)
-    names = np.asarray(cond['joints_names_embs'], np.float32)
-    marked = np.arange(len(cond['parents']) * REST_GEOMETRY_DIM, dtype=np.float32).reshape(-1, REST_GEOMETRY_DIM)
-    sample = reference_sample(motion, cond, names, geometry=marked)
-    np.testing.assert_array_equal(sample['rest_pose'], marked[:, REST_POSE_COLUMNS])
-    fresh = reference_sample(motion, cond, names)
-    np.testing.assert_array_equal(fresh['rest_pose'], rest_geometry(cond)[:, REST_POSE_COLUMNS])

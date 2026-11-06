@@ -1,6 +1,6 @@
 """The tempo condition: resample_speed_cond enters as each window frame's
 physical time, added per frame (never through the timestep token), and is
-dropped in training via tempo_cfg_drop_prob / tempo_active."""
+always kept in training and inference."""
 from __future__ import annotations
 
 import sys
@@ -16,7 +16,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (  # no
     JOINT_STRUCT_DIM,
 )
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from model.anytop import AnyTop, create_sin_embedding  # noqa: E402
+from model.motion_diffusion import MotionDiffusion, create_sin_embedding  # noqa: E402
 
 T5_DIM = 512
 LATENT = 8
@@ -37,11 +37,10 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_model(tempo_cfg_drop_prob=0.1):
-    model = AnyTop(
+def _make_model():
+    model = MotionDiffusion(
         max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
         num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM,
-        tempo_cfg_drop_prob=tempo_cfg_drop_prob,
     )
     # A trained projection: the zero-init last layer would hide every effect.
     torch.nn.init.normal_(model.tempo_projection[-1].weight, std=0.5)
@@ -75,7 +74,7 @@ def _decoder_input(model, y, frames=3, x=None):
 
 class TempoConditionTest(unittest.TestCase):
     def test_fresh_projection_is_a_no_op(self):
-        model = AnyTop(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32,
+        model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
                        t5_out_dim=T5_DIM).eval()
         emb = model._tempo_frame_embedding(
@@ -117,14 +116,18 @@ class TempoConditionTest(unittest.TestCase):
         open_y = dict(y, is_loop=torch.tensor([False, False]))
         self.assertFalse(torch.allclose(model._tempo_frame_embedding(open_y, 2, frames, torch.device('cpu')), emb))
 
-    def test_dropped_loop_rows_get_no_cycle_length(self):
-        model = _make_model().eval()
+    def test_loop_tempo_is_always_kept(self):
+        model = _make_model()
         torch.nn.init.normal_(model.loop_period_projection[-1].weight, std=0.5)
         torch.nn.init.normal_(model.loop_period_projection[-1].bias, std=0.5)
         y = _make_y(4, resample_speed_cond=torch.tensor([2.0, 2.0]), is_loop=torch.tensor([True, True]),
                     loop_tile_count=torch.tensor([2, 1]), tempo_active=torch.zeros(2, dtype=torch.bool))
-        emb = model._tempo_frame_embedding(y, 2, 4, torch.device('cpu'))
-        self.assertTrue(torch.equal(emb, torch.zeros_like(emb)))
+        for training in (True, False):
+            model.train(training)
+            emb = model._tempo_frame_embedding(y, 2, 4, torch.device('cpu'))
+            expected = model.loop_period_projection(create_sin_embedding(
+                torch.tensor([4.0, 8.0]).view(2, 1, 1), LATENT))
+            torch.testing.assert_close(emb, expected.transpose(0, 1).expand(4, -1, -1))
 
     def test_rest_pose_slot_carries_no_tempo(self):
         model = _make_model().eval()
@@ -132,28 +135,18 @@ class TempoConditionTest(unittest.TestCase):
         fast = _decoder_input(model, _make_y(resample_speed_cond=torch.tensor([2.0, 2.0])))
         self.assertTrue(torch.equal(slow['tgt'][0], fast['tgt'][0]))
 
-    def test_dropped_rows_ignore_the_speed(self):
-        model = _make_model().eval()
+    def test_open_tempo_is_always_kept(self):
+        model = _make_model()
         off = torch.zeros(2, dtype=torch.bool)
-        slow = _decoder_input(model, _make_y(resample_speed_cond=torch.tensor([0.5, 0.5]), tempo_active=off))
-        fast = _decoder_input(model, _make_y(resample_speed_cond=torch.tensor([2.0, 2.0]), tempo_active=off))
-        self.assertTrue(torch.equal(slow['tgt'], fast['tgt']))
+        y = _make_y(resample_speed_cond=torch.tensor([2.0, 2.0]), tempo_active=off)
+        times = torch.arange(3, dtype=torch.float32).view(1, -1, 1) * 2.5
+        expected = model.tempo_projection(create_sin_embedding(times, LATENT))
+        for training in (True, False):
+            model.train(training)
+            emb = model._tempo_frame_embedding(y, 2, 3, torch.device('cpu'))
+            torch.testing.assert_close(emb, expected.transpose(0, 1).expand(-1, 2, -1))
 
-    def test_training_drop_and_eval_keep(self):
-        model = _make_model(tempo_cfg_drop_prob=1.0)
-        cpu = torch.device('cpu')
-        model.train()
-        self.assertFalse(bool(model._resolve_tempo_active(None, 4, cpu).any()))
-        model.eval()
-        self.assertTrue(bool(model._resolve_tempo_active(None, 4, cpu).all()))
-        with self.assertRaises(ValueError):
-            model._resolve_tempo_active(torch.ones(3, dtype=torch.bool), 2, cpu)
-
-    def test_invalid_drop_prob_rejected(self):
-        with self.assertRaises(ValueError):
-            _make_model(tempo_cfg_drop_prob=1.5)
-
-    def test_dropped_row_changes_the_output(self):
+    def test_legacy_tempo_mask_cannot_drop_the_output(self):
         model = _make_model().eval()
         model.seqTransDecoder = _TimestepEchoDecoder()
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([98, 99])
@@ -162,7 +155,7 @@ class TempoConditionTest(unittest.TestCase):
             kept = model(x, t, y=dict(y, tempo_active=torch.ones(2, dtype=torch.bool)))
             dropped = model(x, t, y=dict(y, tempo_active=torch.zeros(2, dtype=torch.bool)))
             default = model(x, t, y=y)
-        self.assertFalse(torch.allclose(kept, dropped))
+        self.assertTrue(torch.allclose(kept, dropped))
         self.assertTrue(torch.allclose(default, kept))
 
 if __name__ == '__main__':

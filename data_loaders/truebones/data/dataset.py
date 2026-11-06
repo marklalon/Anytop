@@ -102,7 +102,6 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 
 
-
 # The merged cond records each source's train/val assignment from datasets_all.jsonl.
 SUPPORTED_SPLITS = ("train", "val")
 ALL_SPLIT_NAME = "all"
@@ -790,7 +789,7 @@ def load_reference_groups(sources, data_dict) -> dict[str, tuple[str, ...]]:
     from the other members only. Group members outside this run's pool (a split, subset or
     action-group filter) are left out; a group left with one member is no
     group. Every member must have the same stored length and is_loop flag,
-    since the reference encoder reads the partner on the target's time axis.
+    since the autoencoder pair shares one temporal map.
     """
     by_namespace = {source.namespace: source for source in sources}
     parent: dict[str, str] = {}
@@ -1007,7 +1006,7 @@ class MotionDataset(data.Dataset):
         # (not on the clip), so it is constant across all samples of a species.
         # Precompute once at construction instead of rebuilding it inside the
         # per-sample hot path (_load_physical_motion). The target reads the
-        # REST_GEOM_COLUMNS slice; a reference on the stored rig reuses the full array.
+        # REST_GEOM_COLUMNS slice; the autoencoder uses the same geometry.
         self._rest_geometry_cache = {
             object_key: rest_geometry(entry)
             for object_key, entry in cond_dict.items()
@@ -1129,6 +1128,8 @@ class MotionDataset(data.Dataset):
             raise RuntimeError("No motion clips were found for the requested dataset subset.")
 
         minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.min_length)
+        if split == 'val' and minimum_valid_index == len(sorted_pairs):
+            raise EmptySplitError(f'No validation clips meet min_length={self.min_length}.')
         if self.sample_limit > 0:
             preferred_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_motion_length)
             candidate_pairs = sorted_pairs[preferred_valid_index:]
@@ -1157,16 +1158,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        # Same-motion groups across rigs (REFERENCE_PAIRS_FILE): a grouped clip
-        # draws its encoder input uniformly from the other members of its group.
-        self.reference_groups = (
-            load_reference_groups(opt.sources, data_dict) if getattr(opt, 'ref_encoder', False) else {}
-        )
-        if self.reference_groups:
-            print(
-                f"[dataset] reference groups: {len(set(self.reference_groups.values()))} groups, "
-                f"{len(self.reference_groups)} clips"
-            )
         high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
         print(
             f"[dataset] high-frequency clips (split {self.split}, cond {HIGH_FREQUENCY_COND_KEY}): "
@@ -1299,7 +1290,8 @@ class MotionDataset(data.Dataset):
             loop_offset=loop_offset,
         )
 
-    def _prepare_sample(self, name, data, target_num_frames=None, loop_offset=None, return_aug_info=False):
+    def _prepare_sample(self, name, data, target_num_frames=None, loop_offset=None, return_aug_info=False,
+                        _temporal_plan=None):
         if target_num_frames is None:
             target_num_frames = self.max_motion_length
         target_num_frames = int(target_num_frames)
@@ -1332,7 +1324,8 @@ class MotionDataset(data.Dataset):
             if specific_loop_cond_prob is None else specific_loop_cond_prob
         )
         loop_uncond = bool(
-            is_loop
+            _temporal_plan is None
+            and is_loop
             and loop_offset is None
             and loop_cond_prob < 1.0
             and random.random() >= loop_cond_prob
@@ -1341,29 +1334,6 @@ class MotionDataset(data.Dataset):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_geom, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         cond = self.cond_dict[object_type]
         joint_struct = self._joint_struct_cache[object_type]
-        # The reference encoder's input draws its own skeleton augmentation, so
-        # it starts from the stored rig, not from the target's augmented one.
-        # A grouped clip draws that rig uniformly from the rest of its group,
-        # never itself: its self-reference is disabled.
-        ref_source = None
-        ref_partner = False
-        if getattr(self.opt, 'ref_encoder', False):
-            group = getattr(self, "reference_groups", {}).get(name)
-            partner = random.choice([member for member in group if member != name]) if group else name
-            if partner == name:
-                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']),
-                              self._rest_geometry_cache[object_type])
-            else:
-                partner_data = self.data_dict[partner]
-                partner_type = partner_data['object_type']
-                ref_source = (
-                    self._load_physical_motion(partner_data)[0],
-                    self.cond_dict[partner_type],
-                    self._joint_struct_cache[partner_type],
-                    int(partner_data['motion_metadata']['translation_root_index']),
-                    self._rest_geometry_cache[partner_type],
-                )
-                ref_partner = True
         # ── Rest variant (the species' hand-made rest poses; see rest_variants.py) ──
         # First skeleton stage: from here on the sample is the stored rig held in
         # another rest, and the stages below edit that rig. The structural
@@ -1422,122 +1392,134 @@ class MotionDataset(data.Dataset):
             if rest_repose_info['applied']:
                 rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
-        # The reference encoder's input draws its skeleton augmentation here too,
-        # on its whole stored clip, so it is grounded on the same clip as the target.
-        ref_skeleton_changed = False
-        if ref_source is not None:
-            from data_loaders.reference import augment_reference_skeleton
-            ref_clip, ref_cond, ref_joint_struct, ref_root_index, ref_geometry = ref_source
-            ref_clip, ref_cond, ref_shared, ref_skeleton_changed = augment_reference_skeleton(
-                ref_clip, ref_cond, dict(motion_metadata, translation_root_index=ref_root_index), self.opt,
-                shared=dict(joint_struct=ref_joint_struct, geometry=ref_geometry))
         # Preview can replay temporal draws on the original skeleton exactly.
         bone_length_rng_state = random.getstate() if return_aug_info else None
-        loop_phase_offset = 0
-        loop_tile_count = 1
-        # Besides loop_uncond, the only downgrade is the over-long crop below,
-        # which breaks the cycle.
-        loop_condition_active = bool(is_loop) and not loop_uncond
+        if _temporal_plan is None:
+            loop_phase_offset = 0
+            loop_tile_count = 1
+            # Besides loop_uncond, the only downgrade is the over-long crop below,
+            # which breaks the cycle.
+            loop_condition_active = bool(is_loop) and not loop_uncond
 
-        # ── Closing-key drop (applies to ALL is_loop motions) ──
-        # A loop authored with its last frame repeating frame 0 is the loop
-        # plus one redundant frame.  It goes first, on the clip as stored:
-        # every stage below treats the clip as periodic (the speed resample's wrap
-        # step, the circular roll, the tile seams, the window resample),
-        # and each would turn that frame into a one-frame stall at a random
-        # phase of the window.  The roll also makes it undetectable afterwards
-        # -- once rolled, first and last are no longer the repeated pair.
-        if is_loop:
-            motion = _drop_loop_closing_frame(motion)
-            m_length = int(motion.shape[0])
-        target_skeleton_changed = bool(rest_variant_info['applied'] or topology_info['applied']
-                                       or bone_length_info['applied'] or rest_repose_info['applied'])
-        ref_separate_rig = ref_partner or target_skeleton_changed or ref_skeleton_changed
-        if ref_source is not None and ref_separate_rig:
-            # The target's verdict, so both sides share one time axis below.
-            ref_motion = ref_clip[:m_length]
-
-        # A high-frequency clip (high_frequency.py) is never resampled to fewer
-        # frames, so its source budget is the window itself: the speed draw
-        # only slows one that fits and never past the window, tiling stays within
-        # the window, and an over-long one is cropped to the window at
-        # resample_speed 1 instead of squeezed into it.
-        high_frequency = bool(data.get('high_frequency', False))
-        if high_frequency:
-            max_source_length = target_num_frames
-        else:
-            max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
-        # ── Motion-speed augmentation (applies to every clip) ──
-        # Runs ahead of the loop augmentations and is invisible to everything
-        # after it: the time-scaled clip is simply a shorter/longer source clip
-        # recorded at a different tempo, so roll / tile / crop / the window
-        # resample and resample_speed_cond all see an ordinary clip and the
-        # model is told nothing. Its purpose is the corpus' length distribution
-        # -- much of it piles up on a few exact frame counts, so without it
-        # resample_speed is a comb and an inference num_frames between the
-        # teeth is out of distribution. A loop clip is time-scaled periodically,
-        # so it is still a closed cycle.
-        #
-        # The stages from here to the window resample are linear maps of time,
-        # so none of them is materialized: the speed draw only sets the scaled
-        # length, roll / tile / crop only move a frame shift (in scaled frames)
-        # and the window length, and the source is interpolated once at the
-        # end (resample_time_scaled_window). Two resamples in a row would cut
-        # every source key between two intermediate frames.
-        label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
-        source_motion = motion
-        source_length = int(m_length)
-        motion_speed_applied = 1.0
-        time_scaled_length = self._sample_motion_speed_target_length(
-            m_length, max_source_length,
-            slow_only=high_frequency,
-        )
-        if time_scaled_length != m_length:
-            motion_speed_applied = resample_step_scale(
-                m_length, time_scaled_length, periodic=bool(is_loop)
+            # ── Closing-key drop (applies to ALL is_loop motions) ──
+            # A loop authored with its last frame repeating frame 0 is the loop
+            # plus one redundant frame.  It goes first, on the clip as stored:
+            # every stage below treats the clip as periodic (the speed resample's wrap
+            # step, the circular roll, the tile seams, the window resample),
+            # and each would turn that frame into a one-frame stall at a random
+            # phase of the window.  The roll also makes it undetectable afterwards
+            # -- once rolled, first and last are no longer the repeated pair.
+            if is_loop:
+                motion = _drop_loop_closing_frame(motion)
+                m_length = int(motion.shape[0])
+            # A high-frequency clip (high_frequency.py) is never resampled to fewer
+            # frames, so its source budget is the window itself: the speed draw
+            # only slows one that fits and never past the window, tiling stays within
+            # the window, and an over-long one is cropped to the window at
+            # resample_speed 1 instead of squeezed into it.
+            high_frequency = bool(data.get('high_frequency', False))
+            if high_frequency:
+                max_source_length = target_num_frames
+            else:
+                max_source_length = target_num_frames * MAX_SOURCE_FRAMES_MULT
+            # ── Motion-speed augmentation (applies to every clip) ──
+            # Runs ahead of the loop augmentations and is invisible to everything
+            # after it: the time-scaled clip is simply a shorter/longer source clip
+            # recorded at a different tempo, so roll / tile / crop / the window
+            # resample and resample_speed_cond all see an ordinary clip and the
+            # model is told nothing. Its purpose is the corpus' length distribution
+            # -- much of it piles up on a few exact frame counts, so without it
+            # resample_speed is a comb and an inference num_frames between the
+            # teeth is out of distribution. A loop clip is time-scaled periodically,
+            # so it is still a closed cycle.
+            #
+            # The stages from here to the window resample are linear maps of time,
+            # so none of them is materialized: the speed draw only sets the scaled
+            # length, roll / tile / crop only move a frame shift (in scaled frames)
+            # and the window length, and the source is interpolated once at the
+            # end (resample_time_scaled_window). Two resamples in a row would cut
+            # every source key between two intermediate frames.
+            label_phase_free = loop_is_phase_free(motion_metadata.get('action_label'))
+            source_motion = motion
+            source_length = int(m_length)
+            motion_speed_applied = 1.0
+            time_scaled_length = self._sample_motion_speed_target_length(
+                m_length, max_source_length,
+                slow_only=high_frequency,
             )
-            m_length = int(time_scaled_length)
-        scaled_length = int(m_length)
-        frame_shift = 0
-        # ── Loop-aware data augmentation (PHASE-FREE is_loop motions only) ──
-        # Circular roll shifts the temporal phase so the model sees every loop
-        # from a random starting frame.  Random tiling repeats the clip up to
-        # 2× target length so the subsequent resample has enough source frames
-        # to produce a clean stretched/clipped result without heavy speed
-        # distortion.  Both are pure temporal operations on feature arrays --
-        # they preserve per-frame feature semantics (see _tile_loop_motion and
-        # _circular_roll_motion, which they are equivalent to) -- and are kept
-        # here as the frame shift and window length only.
-        # A phase-anchored loop (loop_is_phase_free: an attack, a roar, an
-        # idle with a glance or a bite of food -- an event that leaves a ready
-        # pose and returns to it) keeps frame 0 at
-        # the ready pose and one event per window: under the circular time
-        # table its phase 0 IS the wind-up, and on the loop_uncond path it
-        # stays an ordinary one-shot clip instead of a strike at a random
-        # phase.  An explicit loop_offset (diagnostics) is still honoured.
-        loop_phase_free = bool(is_loop) and label_phase_free
-        if is_loop:
-            if loop_phase_free or loop_offset is not None:
-                loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-            frame_shift += int(loop_phase_offset)
-            if loop_phase_free:
-                loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
-            m_length = int(m_length) * int(loop_tile_count)
+            if time_scaled_length != m_length:
+                motion_speed_applied = resample_step_scale(
+                    m_length, time_scaled_length, periodic=bool(is_loop)
+                )
+                m_length = int(time_scaled_length)
+            scaled_length = int(m_length)
+            frame_shift = 0
+            # ── Loop-aware data augmentation (PHASE-FREE is_loop motions only) ──
+            # Circular roll shifts the temporal phase so the model sees every loop
+            # from a random starting frame.  Random tiling repeats the clip up to
+            # 2× target length so the subsequent resample has enough source frames
+            # to produce a clean stretched/clipped result without heavy speed
+            # distortion.  Both are pure temporal operations on feature arrays --
+            # they preserve per-frame feature semantics (see _tile_loop_motion and
+            # _circular_roll_motion, which they are equivalent to) -- and are kept
+            # here as the frame shift and window length only.
+            # A phase-anchored loop (loop_is_phase_free: an attack, a roar, an
+            # idle with a glance or a bite of food -- an event that leaves a ready
+            # pose and returns to it) keeps frame 0 at
+            # the ready pose and one event per window: under the circular time
+            # table its phase 0 IS the wind-up, and on the loop_uncond path it
+            # stays an ordinary one-shot clip instead of a strike at a random
+            # phase.  An explicit loop_offset (diagnostics) is still honoured.
+            loop_phase_free = bool(is_loop) and label_phase_free
+            if is_loop:
+                if loop_phase_free or loop_offset is not None:
+                    loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+                frame_shift += int(loop_phase_offset)
+                if loop_phase_free:
+                    loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
+                m_length = int(m_length) * int(loop_tile_count)
 
-        if m_length > max_source_length:
-            # A clip longer than the source budget (n*MAX_SOURCE_FRAMES_MULT, or
-            # n for a high-frequency clip) is cropped, which breaks the closed
-            # loop, so a loop is downgraded to non-loop here and told so.
-            # The crop LENGTH is fixed at the full budget -- every over-long
-            # clip contributes budget source frames, resampled to the target
-            # length below at resample_speed budget/n -- while the window
-            # POSITION stays random so repeated epochs still see the whole clip.
-            if loop_condition_active:
-                loop_uncond = True
-            loop_condition_active = False
-            ind = random.randint(0, m_length - max_source_length)
-            frame_shift += int(ind)
-            m_length = int(max_source_length)
+            if m_length > max_source_length:
+                # A clip longer than the source budget (n*MAX_SOURCE_FRAMES_MULT, or
+                # n for a high-frequency clip) is cropped, which breaks the closed
+                # loop, so a loop is downgraded to non-loop here and told so.
+                # The crop LENGTH is fixed at the full budget -- every over-long
+                # clip contributes budget source frames, resampled to the target
+                # length below at resample_speed budget/n -- while the window
+                # POSITION stays random so repeated epochs still see the whole clip.
+                if loop_condition_active:
+                    loop_uncond = True
+                loop_condition_active = False
+                ind = random.randint(0, m_length - max_source_length)
+                frame_shift += int(ind)
+                m_length = int(max_source_length)
+
+            # Reuse the exact time map, including the closing-key verdict.
+            temporal_plan = {
+                'source_length': source_length,
+                'scaled_length': scaled_length,
+                'm_length': m_length,
+                'frame_shift': frame_shift,
+                'loop_condition_active': loop_condition_active,
+                'loop_uncond': loop_uncond,
+                'loop_phase_offset': loop_phase_offset,
+                'loop_tile_count': loop_tile_count,
+                'loop_phase_free': loop_phase_free,
+                'motion_speed_applied': motion_speed_applied,
+            }
+        else:
+            temporal_plan = _temporal_plan
+            source_length = temporal_plan['source_length']
+            scaled_length = temporal_plan['scaled_length']
+            m_length = temporal_plan['m_length']
+            frame_shift = temporal_plan['frame_shift']
+            loop_condition_active = temporal_plan['loop_condition_active']
+            loop_uncond = temporal_plan['loop_uncond']
+            loop_phase_offset = temporal_plan['loop_phase_offset']
+            loop_tile_count = temporal_plan['loop_tile_count']
+            loop_phase_free = temporal_plan['loop_phase_free']
+            motion_speed_applied = temporal_plan['motion_speed_applied']
+            source_motion = motion[:source_length]
 
         source_len_for_resample_speed = int(m_length)
         resample_speed_cond = float(source_len_for_resample_speed) / float(target_num_frames)
@@ -1570,7 +1552,7 @@ class MotionDataset(data.Dataset):
             # Anchor each final window after every temporal operation, before
             # canonical standardization. Only the root carries world XZ; the
             # other joints are already RIC. Copy even on the identity path so
-            # cached source clips and the reference's source stay untouched.
+            # cached source clips stay untouched.
             clip = clip.copy()
             clip[:, 0, [0, 2]] -= clip[0, 0, [0, 2]]
             return clip
@@ -1580,19 +1562,6 @@ class MotionDataset(data.Dataset):
         motion = np.nan_to_num(
             physical_hml_to_canonical(motion, cond)
         ).astype(np.float32, copy=False)
-        reference = None
-        if ref_source is not None:
-            from data_loaders.reference import finish_reference_sample
-            if ref_separate_rig:
-                reference = finish_reference_sample(
-                    sample_window(ref_motion), ref_cond, self.opt, shared=ref_shared)
-            else:
-                # Both sides kept the stored rig, so the reference is the
-                # target's window and reuses its derived channels.
-                reference = finish_reference_sample(
-                    physical_motion, cond, self.opt,
-                    shared=dict(feats=motion, joint_struct=joint_struct, geometry=ref_geometry))
-                reference['same_rig'] = True
         m_length = target_num_frames
 
         # is_loop says the window is closed; on those rows loop_tile_count is
@@ -1615,9 +1584,27 @@ class MotionDataset(data.Dataset):
         motion_metadata['bone_length_aug_applied'] = bool(bone_length_info['applied'])
         self._apply_action_label_condition(motion_metadata)
 
+        paired_view = None
+        if getattr(self.opt, 'autoencoder_dual_view', False) and _temporal_plan is None:
+            # Real reference pairs replace the synthetic second view when
+            # available. Each motion retains its own rig and augmentation;
+            # the validated frame-for-frame pair shares one temporal map.
+            group = (getattr(self, 'reference_groups', {}).get(name)
+                     if getattr(self.opt, 'autoencoder_reference_pairs', False) else None)
+            # Uniform over all members, including self (one of N entries).
+            # Validation excludes self to measure real paired transfer.
+            candidates = ([member for member in group if member != name]
+                          if group and getattr(self.opt, 'autoencoder_reference_only_partners', False)
+                          else group)
+            partner = random.choice(candidates) if candidates else name
+            partner_data = self.data_dict[partner] if partner != name else data
+            paired_view = self._prepare_sample(
+                partner, partner_data, target_num_frames=target_num_frames,
+                loop_offset=loop_offset, _temporal_plan=temporal_plan)
+
         if return_aug_info:
             return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
-                'reference': reference,
+                'autoencoder_view': paired_view,
                 'joint_mask_limb_roots': _limb_root_mask(cond),
                 'limb_tip_mask': _limb_tip_mask(cond),
                 'joint_struct': joint_struct,
@@ -1646,7 +1633,7 @@ class MotionDataset(data.Dataset):
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
         return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
-            'reference': reference,
+            'autoencoder_view': paired_view,
             'joint_mask_limb_roots': _limb_root_mask(cond),
             'limb_tip_mask': _limb_tip_mask(cond),
             'joint_struct': joint_struct,
@@ -1730,13 +1717,13 @@ class MotionDataset(data.Dataset):
         carries -- the loader's joint bucketing keys on it.
         """
         names = self.name_list if self.use_weighted_sampler else self.name_list[self.pointer:]
-        groups = getattr(self, 'reference_groups', {})
+
+        groups = (getattr(self, 'reference_groups', {})
+                  if getattr(self.opt, 'autoencoder_reference_pairs', False) else {})
 
         def joints(name):
             return len(self.cond_dict[self.data_dict[name]['object_type']]['parents'])
 
-        # A grouped clip may carry any member's rig as its reference, and the
-        # collate pads to the wider of reference and target.
         return np.asarray(
             [max(joints(member) for member in groups.get(name, (name,))) for name in names],
             dtype=np.int64,
@@ -1926,7 +1913,6 @@ class Truebones(data.Dataset):
                 setattr(self.opt, prob_name, value)
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.topology_aug_prob = float(kwargs.get('topology_aug_prob', 0.0))
-        self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
         self.opt.joint_name_drop_prob = float(kwargs.get('joint_name_drop_prob', 0.0))
         if not 0 <= self.opt.joint_name_drop_prob <= 1:
             raise ValueError('joint_name_drop_prob must be in [0, 1]')

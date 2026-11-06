@@ -18,7 +18,7 @@ from data_loaders.truebones.truebones_utils.rest_variants import (
 )
 from data_loaders.truebones.truebones_utils.features import recover_processed_animation_from_feature_animation
 from data_loaders.truebones.truebones_utils.joint_struct_features import build_joint_struct_features
-from data_loaders.reference import REST_GEOM_COLUMNS, REST_POSE_COLUMNS, prepare_reference_sample, rest_geometry
+from data_loaders.reference import REST_GEOM_COLUMNS, rest_geometry
 from motion_lib.Animation import rotations_global
 from test_rest_repose_aug import PARENTS, fixture, make_dataset, world
 
@@ -137,14 +137,3 @@ def test_loader_draws_a_variant_and_keeps_structural_channel():
     assert not np.allclose(sample[3], rest_geometry(cond)[:, REST_GEOM_COLUMNS])
     np.testing.assert_array_equal(sample[12]['joint_struct'], dataset._joint_struct_cache['test'])
     np.testing.assert_allclose(sample[4], new_cond['offsets'])
-
-
-def test_reference_draws_its_own_variant_and_keeps_structural_channel():
-    motion, cond, metadata = fixture()
-    cond = with_variants(cond)
-    stored = build_joint_struct_features(cond)
-    opt = SimpleNamespace(rest_variant_prob=1.)
-    random.seed(2)
-    sample = prepare_reference_sample(motion, cond, metadata, opt, shared=dict(joint_struct=stored))
-    np.testing.assert_array_equal(sample['joint_struct'], stored)
-    assert not np.allclose(sample['rest_pose'], rest_geometry(cond)[:, REST_POSE_COLUMNS])

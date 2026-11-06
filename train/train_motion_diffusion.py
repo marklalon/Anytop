@@ -34,7 +34,6 @@ from data_loaders.truebones.truebones_utils.bone_length_aug import (
     DEFAULT_BONE_LENGTH_AUG, DEFAULT_BONE_LENGTH_AUG_MIN)
 from data_loaders.truebones.truebones_utils.rest_repose_aug import DEFAULT_REST_REPOSE_MAX_DEG
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
-from model.joint_name_noise import joint_name_noise_basis
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.data.dataset import load_action_conditioning
@@ -312,7 +311,6 @@ def create_training_data_loader(args):
         motion_speed_aug_prob=getattr(args, 'motion_speed_aug_prob', 1.0),
         loop_tile_single_prob=getattr(args, 'loop_tile_single_prob', 0.5),
         topology_aug_prob=getattr(args, 'topology_aug_prob', 0.0),
-        ref_encoder=getattr(args, 'ref_encoder', False),
         joint_name_drop_prob=getattr(args, 'joint_name_drop_prob', 0.0),
         bone_length_aug_prob=getattr(args, 'bone_length_aug_prob', 0.0),
         bone_length_aug_max=getattr(args, 'bone_length_aug_max', DEFAULT_BONE_LENGTH_AUG),
@@ -366,10 +364,7 @@ def run_training(args):
     print(f"[INFO] Train split '{train_split}': {num_motions} motions")
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
-    print(f'[model] parameter budget: {model.reference_parameter_budget()}')
-    # From the training cond, so a resume rebuilds the same basis.
-    model.set_joint_name_noise_basis(*joint_name_noise_basis(
-        data.dataset.motion_dataset.cond_dict, int(getattr(args, 'joint_name_noise_rank', 128))))
+    print(f'[model] parameters: {sum(p.numel() for p in model.parameters())}')
     model.to(dist_util.dev())
     ml_platform.watch_model(model)
     print("Training...")

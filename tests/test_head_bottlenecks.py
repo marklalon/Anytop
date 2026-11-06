@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 from model.motion_transformer import (  # noqa: E402
     ACTION_ADALN_PARAMS_PER_LAYER,
     GraphMotionDecoder,
@@ -60,8 +60,8 @@ def test_get_gmdm_args_defaults_species_to_128_and_other_heads_to_full_width():
 
 
 def test_explicit_defaults_match_implicit_layout():
-    base = AnyTop(**get_gmdm_args(_args()))
-    explicit = AnyTop(**get_gmdm_args(_args(
+    base = MotionDiffusion(**get_gmdm_args(_args()))
+    explicit = MotionDiffusion(**get_gmdm_args(_args(
         action_adaln_bottleneck=0, species_film_bottleneck=128, last_layer_ff=0)))
     assert _shapes(base) == _shapes(explicit)
     dec = base.seqTransDecoder
@@ -71,7 +71,7 @@ def test_explicit_defaults_match_implicit_layout():
 
 
 def test_v24_widths_land_where_they_should():
-    m = AnyTop(**get_gmdm_args(_args(
+    m = MotionDiffusion(**get_gmdm_args(_args(
         action_adaln_bottleneck=12, species_film_bottleneck=8, last_layer_ff=16)))
     dec = m.seqTransDecoder
     assert tuple(dec.action_adaln[0].weight.shape) == (12, D)
@@ -107,15 +107,15 @@ def test_last_layer_ff_replacement_keeps_dropout_and_activation():
 @pytest.mark.parametrize('flag', ['action_adaln_bottleneck', 'species_film_bottleneck', 'last_layer_ff'])
 def test_negative_widths_are_refused(flag):
     with pytest.raises(ValueError, match=flag):
-        AnyTop(**get_gmdm_args(_args(**{flag: -1})))
+        MotionDiffusion(**get_gmdm_args(_args(**{flag: -1})))
 
 
 def test_forward_runs_with_narrow_heads():
     torch.manual_seed(0)
-    m = AnyTop(**get_gmdm_args(_args(
+    m = MotionDiffusion(**get_gmdm_args(_args(
         action_adaln_bottleneck=12, species_film_bottleneck=8, last_layer_ff=16))).eval()
     # A minimal batch through the decoder alone, which is where two of the
-    # three knobs live; AnyTop.forward needs the full cond bundle.
+    # three knobs live; MotionDiffusion.forward needs the full cond bundle.
     dec = m.seqTransDecoder
     B, J, frames = 2, 4, 5
     y = {

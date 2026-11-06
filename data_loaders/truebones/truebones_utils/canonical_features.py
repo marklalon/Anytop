@@ -215,9 +215,12 @@ def _apply_channel_mask(feature, which):
         key = (int(n_joints), int(n_feats), which, str(feature.device), feature.dtype)
         mask = _MASK_TENSOR_CACHE.get(key)
         if mask is None:
-            mask = torch.as_tensor(
-                _channel_mask(n_joints, n_feats, which), device=feature.device, dtype=feature.dtype
-            )
+            # These process-wide constants also serve training after inference.
+            # Inference tensors cannot be saved by autograd for backward.
+            with torch.inference_mode(False):
+                mask = torch.as_tensor(
+                    _channel_mask(n_joints, n_feats, which), device=feature.device, dtype=feature.dtype
+                )
             _MASK_TENSOR_CACHE[key] = mask
         return feature * (mask.view(1, n_joints, n_feats, 1) if four_d else mask)
 
@@ -286,7 +289,7 @@ def working_to_stored(motion, *, is_loop):
 def rest_pos_from_cond(cond_entry, *, like=None):
     """The skeleton's physical rest-pose positions, ``[J, 3]``.
 
-    Public: the reference encoder's bone-direction channel reads this same
+    Public: the shared skeleton geometry channel reads this same
     position channel, so it is part of the feature contract, not an internal
     helper.
     """
@@ -416,7 +419,9 @@ def _spatial_L_vector_tensor(n_feats, device, dtype):
     key = (int(n_feats), str(device), dtype)
     cached = _SPATIAL_L_TENSOR_CACHE.get(key)
     if cached is None:
-        cached = torch.as_tensor(_spatial_L_vectors(n_feats), device=device, dtype=dtype)
+        # Keep cache entries usable by autograd even when inference warms them.
+        with torch.inference_mode(False):
+            cached = torch.as_tensor(_spatial_L_vectors(n_feats), device=device, dtype=dtype)
         _SPATIAL_L_TENSOR_CACHE[key] = cached
     return cached
 

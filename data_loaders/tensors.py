@@ -304,28 +304,12 @@ def truebones_collate(batch):
     cond['y'].update({'joints_relations': torch.stack(jointsrelationsbatch)})
     cond['y'].update({'graph_dist': torch.stack(graphdistbatch)})
 
-    from data_loaders.reference import collate_reference
-    # The null fields are tensors too, so compiled batches never change keys.
-    struct = cond['y'].get('joint_struct', motion.new_zeros(
-        motion.shape[0], motion.shape[1], JOINT_STRUCT_DIM))
-    cond['y'].update(collate_reference(
-        [item.get('reference') for item in notnone_batches], motion,
-        cond['y']['joints_names_embs'], struct,
-    ))
     return motion, cond
 
 
 def _sample_joint_width(b):
-    """Joints a raw sample needs on the canvas: its rig, or a wider reference.
-
-    Target and reference skeletons are augmented independently, so the
-    reference can keep leaves the target dropped.
-    """
-    width = b[0].shape[1]
-    for extra in b[10:]:
-        if isinstance(extra, dict) and extra.get('reference') is not None:
-            width = max(width, np.asarray(extra['reference']['feats']).shape[1])
-    return width
+    """Joint width of the target motion."""
+    return b[0].shape[1]
 
 
 def truebones_batch_collate(batch, joint_buckets=None):
@@ -355,6 +339,25 @@ def truebones_batch_collate(batch, joint_buckets=None):
         [11] name            – str, motion name
         [12+] extras         – dicts (joint_mask_limb_roots, aug info, …)
     """
+    paired = [b[12].get('autoencoder_view') if len(b) > 12 and isinstance(b[12], dict)
+              else None for b in batch]
+    if any(view is not None for view in paired):
+        if not all(view is not None for view in paired):
+            raise ValueError('Every sample in an AE dual-view batch must carry two views')
+        primary = []
+        for b in batch:
+            item = list(b)
+            item[12] = {k: v for k, v in b[12].items() if k != 'autoencoder_view'}
+            primary.append(item)
+        # One canvas for both views keeps compiled E/D shapes consistent even
+        # when only one view removes enough joints to cross a bucket boundary.
+        ceiling = batch[0][9] if joint_buckets is None else bucket_ceiling(
+            max(_sample_joint_width(b) for b in primary + paired), joint_buckets)
+        motion, cond = truebones_batch_collate(primary, joint_buckets=[ceiling])
+        other_motion, other_cond = truebones_batch_collate(paired, joint_buckets=[ceiling])
+        cond['y']['ae_view_motion'] = other_motion
+        cond['y']['ae_view_cond'] = other_cond['y']
+        return motion, cond
     max_joints = batch[0][9]
     if joint_buckets is not None:
         max_joints = bucket_ceiling(max(_sample_joint_width(b) for b in batch), joint_buckets)
@@ -401,8 +404,6 @@ def truebones_batch_collate(batch, joint_buckets=None):
             'joints_names_embs': joints_names_embs,
             'rest_geom': rest_geom,
         }
-        if extra_cond is not None:
-            item['reference'] = extra_cond.get('reference')
         if extra_cond is not None and 'joint_mask_limb_roots' in extra_cond:
             raw_roots = np.asarray(extra_cond['joint_mask_limb_roots'], dtype=np.bool_)
             padded_roots = torch.zeros((max_joints,), dtype=torch.bool)

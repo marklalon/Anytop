@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model.anytop import AnyTop
+from model.motion_diffusion import MotionDiffusion
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_CHECKPOINT_VERSION,
     CONTROLLED_VOCAB,
@@ -58,9 +58,9 @@ def resolve_t5_out_dim(args, cond_source: str | Path | dict | None = None) -> in
     )
 
 
-def unwrap_anytop_model(model):
+def unwrap_motion_diffusion_model(model):
     unwrapped_model = model
-    while hasattr(unwrapped_model, 'model') and not isinstance(unwrapped_model, AnyTop):
+    while hasattr(unwrapped_model, 'model') and not isinstance(unwrapped_model, MotionDiffusion):
         next_model = getattr(unwrapped_model, 'model')
         if next_model is None or next_model is unwrapped_model:
             break
@@ -95,7 +95,7 @@ def build_checkpoint_payload(model_state_dict, model_avg_state_dict, model):
     sync instead of simply being written once per save.
     """
     action_conditioning = getattr(
-        unwrap_anytop_model(model), 'action_conditioning_metadata', None
+        unwrap_motion_diffusion_model(model), 'action_conditioning_metadata', None
     )
     return {
         'model': model_state_dict,
@@ -196,7 +196,7 @@ def load_checkpoint_weights(payload, source: str, prefer_ema: bool, align_vocab:
 
 def bind_checkpoint_action_conditioning(model, metadata, source: str):
     """Certify the loaded weights against the contract they were trained under."""
-    unwrapped = unwrap_anytop_model(model)
+    unwrapped = unwrap_motion_diffusion_model(model)
     if not getattr(unwrapped, 'action_label_cond', False):
         return None
     action_conditioning = (metadata or {}).get('action_conditioning')
@@ -208,7 +208,7 @@ def bind_checkpoint_action_conditioning(model, metadata, source: str):
     return unwrapped.validate_loaded_action_conditioning(action_conditioning, source)
 
 def create_model_and_diffusion_general_skeleton(args):
-    model = AnyTop(**get_gmdm_args(args))
+    model = MotionDiffusion(**get_gmdm_args(args))
     diffusion = create_gaussian_diffusion(args)
     return model, diffusion
 
@@ -231,8 +231,6 @@ def get_gmdm_args(args):
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'temporal_rope': bool(getattr(args, 'temporal_rope', False)),
-            'temporal_rope_ref_drop_prob': float(getattr(args, 'temporal_rope_ref_drop_prob', 0.0)),
-            'temporal_rope_drop_prob': float(getattr(args, 'temporal_rope_drop_prob', 0.0)),
             'action_adaln_bottleneck': getattr(args, 'action_adaln_bottleneck', 0),
             'species_film_bottleneck': getattr(args, 'species_film_bottleneck', 128),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
@@ -241,18 +239,9 @@ def get_gmdm_args(args):
             'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 20),
-            'tempo_cfg_drop_prob': getattr(args, 'tempo_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
-            'joint_name_noise_std': getattr(args, 'joint_name_noise_std', 0.1),
-            'rest_geom_drop_prob': getattr(args, 'rest_geom_drop_prob', 0.1),
             'rest_geom_joint_drop_prob': getattr(args, 'rest_geom_joint_drop_prob', 0.1),
-            **{key: getattr(args, key, default) for key, default in (
-                ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
-                ('ref_width', 64), ('ref_layers', 2),
-                ('ref_cfg_drop_prob', 0.4))},
-            'mirror_twin_drop_prob': getattr(args, 'mirror_twin_drop_prob', 0.1),
-            'lateral_drop_prob': getattr(args, 'lateral_drop_prob', 0.1),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),

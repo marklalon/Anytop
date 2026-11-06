@@ -20,7 +20,7 @@ def test_main_preview_is_success_only_and_can_be_disabled(tmp_path, monkeypatch,
     task_dir.mkdir(parents=True)
     first = task_dir / "sample_0.npy"
     first.write_bytes(b"existing generation; scoring is replaced in this test")
-    model = tmp_path / "model.pt"
+    model = tmp_path / "model000000001.pt"
     model.touch()
     config = tmp_path / "tasks.json"
     config.write_text("{}")
@@ -28,7 +28,7 @@ def test_main_preview_is_success_only_and_can_be_disabled(tmp_path, monkeypatch,
                   status="harness error: failed task" if failed else "ok", first_npy=first,
                   quality=None, score=None, reference_motion=None)
     monkeypatch.setattr(evaluation, "_load_task_config", lambda _: ({"RUN_NAME": "test"}, [("Category", ["--action_label", "walk"], "walk")]))
-    monkeypatch.setattr(evaluation, "_resolve_checkpoint", lambda _: model)
+    monkeypatch.setattr(evaluation, "_resolve_checkpoint", lambda *_, **__: model)
     monkeypatch.setattr(evaluation, "MotionQualityScorer", lambda **_: object())
     monkeypatch.setattr(evaluation, "_build_record_from_existing", lambda *args: record)
     completed = []

@@ -3,14 +3,13 @@
 Checkpoint evaluation harness
 =============================
 
-Given a single checkpoint path, run a fixed battery of generation tasks
-(plain generation, energy-conditioned loops, convert-to-loop, frame/joint
-inpainting, outpaint), score every generated clip with the motion quality
-evaluator, and write a portable HTML motion review report.
+Given a single checkpoint path, run a battery of generation tasks (plain
+generation, energy-conditioned loops, convert-to-loop, frame/joint inpainting
+and outpaint), score every generated clip with
+the motion quality evaluator, and write a portable HTML motion review report.
 
-Generation tasks call ``sample.generate`` in-process with a shared generation
-runtime, so the checkpoint/model is loaded once for the whole battery. Tasks
-use ``batch_size=4 --amp_dtype fp32``.
+Generation tasks call ``sample.generate`` in-process with shared model weights.
+Tasks use ``batch_size=4 --amp_dtype fp32``.
 Each task's clips are scored in-process with the motion quality scorer
 (``eval/motion_quality/quality.py``): every clip gets a physical-plausibility
 and a data-prior score in [0, 1], its quality is their geometric mean, and a
@@ -46,10 +45,11 @@ root. See :func:`_resolve_output_root`.
 
 By default the evaluation runs *incrementally*: existing task outputs are
 kept and re-scored, and only newly-added tasks are generated.  Each task's
-generate.py flags — and the contents of any referenced motion/cond files — are
-checksummed into a ``task_params.json`` sidecar; if a task's parameters change
-(e.g. its entry in the task config is edited, or a reference file is modified
-in place), the stale output is wiped and the task is regenerated.  Pass
+generate.py flags and the contents of any referenced motion/cond files
+are checksummed into a ``task_params.json`` sidecar; if a
+task's parameters change (e.g. its entry in the task config is edited, or a
+reference file is modified in place), the stale output is wiped and the task is
+regenerated.  Pass
 ``--overwrite`` to wipe the output root and regenerate everything.
 
 After a successful evaluation, a separate local review server starts on an
@@ -121,6 +121,8 @@ _DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
 _PATH_FLAGS = ("--reference_motion", "--cond_path")
+_CONTENT_HASH_FLAGS = _PATH_FLAGS
+
 # generate.py flags every task shares (model_path / output_dir are added per
 # task). fp32: bf16 rounds each frame of the x0 prediction independently, and
 # that white noise inflates the Jerk / Snap / SpectralFlatness scores this
@@ -293,14 +295,16 @@ def _resolve_checkpoint(checkpoint: dict) -> Path:
             model_path = checkpoint_dir / model_path
         return model_path.resolve()
 
+    patterns = ("model*.pt",)
     candidates = sorted(
-        checkpoint_dir.glob("model*.pt"),
+        [path for pattern in patterns for path in checkpoint_dir.glob(pattern)],
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
     if not candidates:
         raise FileNotFoundError(
-            f"No model checkpoint found in {checkpoint_dir} (set checkpoint.MODEL_FILE to choose one)"
+            f"No {' or '.join(patterns)} checkpoint found in {checkpoint_dir} "
+            "(set checkpoint.MODEL_FILE to choose one)"
         )
     return candidates[0].resolve()
 
@@ -332,17 +336,19 @@ def _task_param_hash(extra_args: list[str]) -> str:
     ``--output_dir`` are left out: both are fixed by the report root the task
     dir lives under.
 
-    For path-valued flags (``_PATH_FLAGS``, e.g. ``--reference_motion`` /
-    ``--cond_path``) the referenced file's *contents* are folded in as well, so
+    For path-valued flags in ``_CONTENT_HASH_FLAGS`` (e.g. ``--reference_motion``
+    / ``--cond_path``) the referenced file's *contents* are folded in as well, so
     editing a reference file in place (same path, new content) also changes the
     digest and forces a regen. The ``$LAST_OUTPUT`` sentinel is left as-is (it
     is resolved per-run from the previous task's output, not a fixed file).
+
     """
-    hashed_args = [*_COMMON_GENERATE_ARGS, *extra_args]
+    common_args = _COMMON_GENERATE_ARGS
+    hashed_args = [*common_args, *extra_args]
     parts: list[str] = []
     for i, arg in enumerate(hashed_args):
         parts.append(arg)
-        if i > 0 and hashed_args[i - 1] in _PATH_FLAGS and arg != _LAST_OUTPUT:
+        if i > 0 and hashed_args[i - 1] in _CONTENT_HASH_FLAGS and arg != _LAST_OUTPUT:
             p = Path(arg)
             parts.append(f"sha256:{_file_content_hash(p)}" if p.is_file() else "missing")
     payload = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
@@ -367,7 +373,11 @@ def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str) -> None
     meta_path = task_dir / _TASK_HASH_FILE
     meta_path.write_text(
         json.dumps(
-            {"hash": digest, "common_args": list(_COMMON_GENERATE_ARGS), "args": extra_args},
+            {
+                "hash": digest,
+                "common_args": list(_COMMON_GENERATE_ARGS),
+                "args": extra_args,
+            },
             indent=2, ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -483,19 +493,35 @@ def _task_score_label(extra_args: list, eval_label: str | None) -> str:
     return label
 
 
+# A battery registers the same checkpoint cond for every task, and each task may
+# also adopt its own reference cond, so keep a small LRU: re-reading a ~100 MB
+# cond.npy per task would dominate the run.
+_COND_CACHE: dict[str, dict | None] = {}
+_COND_CACHE_SIZE = 4
+
+
 def _register_cond_path(scorer: MotionQualityScorer, cond_path: str) -> dict | None:
     """Load a cond.npy and register its entries as query skeleton metadata.
 
     Returns the loaded cond dict (None when it could not be loaded) so the
     caller can resolve the task's filename token against it.
     """
-    try:
-        from data_loaders.truebones.truebones_utils.cond_schema import load_cond
-        cond = load_cond(cond_path)
-    except Exception as exc:
-        print(f"    [WARN] failed to register cond_path {cond_path}: {exc}")
-        return None
-    scorer.register_cond(cond)
+    resolved = str(Path(cond_path).resolve())
+    if resolved in _COND_CACHE:
+        cond = _COND_CACHE.pop(resolved)          # refresh LRU recency
+        _COND_CACHE[resolved] = cond
+    else:
+        try:
+            from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+            cond = load_cond(resolved)
+        except Exception as exc:
+            print(f"    [WARN] failed to register cond_path {cond_path}: {exc}")
+            cond = None
+        if len(_COND_CACHE) >= _COND_CACHE_SIZE:
+            _COND_CACHE.pop(next(iter(_COND_CACHE)))
+        _COND_CACHE[resolved] = cond
+    if cond is not None:
+        scorer.register_cond(cond)
     return cond
 
 
@@ -781,13 +807,15 @@ def run_task(
     log_path.write_text(f"# {display_cmd}\n" + stdout.getvalue(), encoding="utf-8", errors="replace")
 
     if returncode != 0:
-        record["status"] = f"generate.py failed (exit {returncode}) — see {log_path}"
+        script = "generate.py"
+        record["status"] = f"{script} failed (exit {returncode}) — see {log_path}"
         print(f"  [FAIL] {record['status']}")
         return record
 
     # Record the parameter checksum so a later incremental run can detect when
     # this task's flags change and regenerate instead of reusing stale output.
-    _write_task_hash(task_dir, extra_args, _task_param_hash(extra_args))
+    _write_task_hash(task_dir, extra_args,
+                     _task_param_hash(extra_args))
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -989,10 +1017,10 @@ def main() -> int:
 
         # ── Incremental mode (default): reuse existing output, re-score only. ──
         # Reuse the existing task dir only when output exists AND its recorded
-        # parameter checksum still matches the current flags. A missing checksum
-        # is legacy/pre-checksum output: reuse it and backfill the checksum so
-        # later runs are guarded (we can't know the old params, so we assume the
-        # output matches the current config rather than forcing a full regen).
+        # parameter checksum still matches the current flags. For motion output a
+        # missing checksum is legacy/pre-checksum output: reuse it and backfill the
+        # checksum so later runs are guarded (we can't know the old params, so we
+        # assume the output matches the current config).
         # --overwrite bypasses this check to regenerate everything.
         current_hash = _task_param_hash(extra_args)
         stored_hash = _read_stored_hash(task_dir)

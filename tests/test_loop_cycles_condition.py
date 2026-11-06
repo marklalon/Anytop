@@ -15,7 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM  # noqa: E402
-from model.anytop import AnyTop, create_sin_embedding  # noqa: E402
+from model.motion_diffusion import MotionDiffusion, create_sin_embedding  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from sample.output_lengths import (  # noqa: E402
     reference_loop_cycles,
@@ -42,7 +42,7 @@ class _CaptureDecoder(torch.nn.Module):
 
 def _model(**kwargs):
     torch.manual_seed(0)
-    model = AnyTop(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
+    model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
                    num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM, **kwargs)
     # Trained heads: the zero-init last layers would hide every effect.
     for head in (model.tempo_projection, model.loop_period_projection):
@@ -140,11 +140,10 @@ def test_open_rows_ignore_the_cycle_count():
     assert torch.equal(a['tgt'], b['tgt'])
 
 
-def test_cycle_count_survives_the_tempo_drop():
-    """A tempo-dropped loop row loses L but keeps k."""
+def test_cycle_count_changes_loop_frame_positions():
+    """The cycle count determines loop frame positions."""
     model = _model()
-    off = torch.zeros(2, dtype=torch.bool)
-    loop = dict(is_loop=torch.tensor([True, True]), tempo_active=off)
+    loop = dict(is_loop=torch.tensor([True, True]))
     one = _decoder_input(model, _y(2, **loop, loop_tile_count=torch.tensor([1, 1])), 6)
     two = _decoder_input(model, _y(2, **loop, loop_tile_count=torch.tensor([2, 2])), 6)
     assert not torch.allclose(one['tgt'], two['tgt'])
@@ -156,14 +155,6 @@ def test_training_keeps_the_cycle_count():
     y = _y(4, is_loop=torch.ones(4, dtype=torch.bool), loop_tile_count=torch.full((4,), 2))
     _, cycles = model._loop_condition(y, 4, CPU)
     assert cycles.tolist() == [2, 2, 2, 2]
-
-
-def test_reference_rows_read_one_cycle():
-    """A reference-active row bypasses the cycle count, like the label."""
-    model = _model()
-    y = _y(3, is_loop=torch.ones(3, dtype=torch.bool), loop_tile_count=torch.tensor([2, 2, 3]))
-    _, cycles = model._loop_condition(y, 3, CPU, ref_active=torch.tensor([True, False, True]))
-    assert cycles.tolist() == [1, 2, 1]
 
 
 def test_collate_carries_the_tile_count():

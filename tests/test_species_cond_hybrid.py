@@ -19,7 +19,7 @@ from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
-from model.anytop import AnyTop  # noqa: E402
+from model.motion_diffusion import MotionDiffusion  # noqa: E402
 
 
 T5_DIM = 512
@@ -55,7 +55,7 @@ class _ProbeHead(torch.nn.Module):
 
 
 def _make_model(species_cond=False, **extra):
-    return AnyTop(
+    return MotionDiffusion(
         max_joints=4,
         feature_len=12,
         latent_dim=8,
@@ -71,7 +71,7 @@ def _make_model(species_cond=False, **extra):
 
 
 def _joint_cond_inputs(batch=1, joints=4, frames=3):
-    """Shapes InputProcess is called with from AnyTop.forward."""
+    """Shapes InputProcess is called with from MotionDiffusion.forward."""
     return (
         torch.randn(batch, joints, 12, frames),
         torch.randn(batch, joints, REST_GEOM_DIM),
@@ -106,25 +106,12 @@ def _make_y(species_code=None, **extra):
 
 class SpeciesHybridTest(unittest.TestCase):
     def test_disabled_by_default(self):
-        model = AnyTop(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
+        model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.input_process.species_film_j)
 
-    def test_inactive_row_bypasses_entire_joint_modulation(self):
-        model = _make_model(species_cond=True).eval()
-        ip = model.input_process
-        torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.1)
-        x, rest, joints, species = _joint_cond_inputs(batch=2)
-        struct = _joint_struct(2)
-        mixed = ip(x, rest, joints, joint_struct=struct, species_code=species,
-                   species_active=torch.tensor([True, False]))
-        ip.species_film_j = None
-        plain = ip(x, rest, joints, joint_struct=struct)
-        self.assertFalse(torch.allclose(mixed[:, 0], plain[:, 0]))
-        self.assertTrue(torch.equal(mixed[:, 1], plain[:, 1]))
-
-    def test_training_without_reference_never_drops_species(self):
+    def test_training_never_drops_species(self):
         model = _make_model(species_cond=True).train()
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         model.seqTransDecoder = _CaptureDecoder()
@@ -196,14 +183,10 @@ class SpeciesHybridTest(unittest.TestCase):
                      None, _joint_struct(1).expand(2, -1, -1), species_code=code)
         self.assertFalse(torch.allclose(out[:, 0], out[:, 1]))
 
-    def test_joint_cond_film_reads_the_noised_names(self):
-        """The FiLM head reads the same noised names the projection does: with
-        the zero-initialized (identity) head, its joint input equals what
-        text_embedding receives, and both differ from the clean names."""
+    def test_joint_cond_film_reads_the_same_names_as_projection(self):
+        """The identity FiLM head and projection read the supplied names."""
         model = _make_model(species_cond=True)
         ip = model.input_process
-        ip.joint_name_noise.noise_std = 0.2
-        ip.joint_name_noise.set_basis(torch.eye(T5_DIM)[:4], torch.ones(4))
         film = _ProbeHead(ip.species_film_j)
         text = _ProbeHead(ip.text_embedding)
         ip.species_film_j, ip.text_embedding = film, text
@@ -213,7 +196,7 @@ class SpeciesHybridTest(unittest.TestCase):
             ip(x, rest_geom, joints, None, _joint_struct(*joints.shape[:2]), species_code=species)
         joint_part = film.last_input[..., :T5_DIM]
         self.assertTrue(torch.allclose(joint_part, text.last_input))
-        self.assertFalse(torch.allclose(joint_part, joints))
+        self.assertTrue(torch.allclose(joint_part, joints))
 
     def test_species_code_must_match_the_module(self):
         x, rest_pose, joints, species = _joint_cond_inputs()
@@ -260,7 +243,6 @@ class SpeciesHybridTest(unittest.TestCase):
         out = model(x, ts, y=y)
         self.assertIsNotNone(capture.last_kwargs)
         self.assertEqual(out.shape, x.shape)
-
 
 
 if __name__ == '__main__':

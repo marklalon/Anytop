@@ -1,13 +1,4 @@
-"""``--reference_motion`` handling: edit and source-encoder paths.
-
-A reference is either a preprocessed ``.npy`` in feature space (its source
-skeleton must be a cond species) or a raw ``.fbx/.glb/.gltf`` (cond-free
-source, encode only). Edit (skip_timesteps / inpaint / outpaint) takes a
-same-species ``.npy``, which ``_prepare_img2img_reference_bundle`` turns into
-the ``[B, J, F, T]`` tensor the sampler clamps to / starts from. Encode
-extracts features on the source rig and routes them only to the motion
-encoder.
-"""
+"""Same-rig motion sources for img2img, inpaint and outpaint editing."""
 import os
 
 import numpy as np
@@ -65,20 +56,6 @@ def _resolve_reference_source_type(
         used_target_fallback = True
 
     return source_type, default_cond_cache, blind_type, used_target_fallback
-
-
-def _build_source_cond_dict(cond_dict, source_type, default_cond_cache=None):
-    source_cond_dict = dict(cond_dict)
-    if source_type in source_cond_dict:
-        return source_cond_dict
-    if not default_cond_cache:
-        raise ValueError(
-            f"source type '{source_type}' not found in cond file and no default cond available."
-        )
-    for key, value in default_cond_cache.items():
-        if key not in source_cond_dict:
-            source_cond_dict[key] = value
-    return source_cond_dict
 
 
 def _validate_reference_motion_path(reference_motion_path):
@@ -172,11 +149,10 @@ def _prepare_img2img_reference_bundle(
     }
 
 
-def _load_raw_encoder_reference(path, reference_cond_path, cache_cond, action_group=None):
+def _load_raw_edit_source(path, reference_cond_path, cache_cond):
     """Run source skeleton preprocessing and feature extraction, with no retarget.
 
-    ``action_group`` overrides the file-name decision of whether the clip takes
-    the locomotion root policy.
+    The preprocessing pipeline infers the locomotion root policy from the file name.
     """
     from data_loaders.truebones.truebones_utils.dataset_pipeline import (
         encode_motion_files_on_rest_pose, _inherit_canonical_stats_from_dataset,
@@ -187,7 +163,7 @@ def _load_raw_encoder_reference(path, reference_cond_path, cache_cond, action_gr
     # Use the same wrapper-folding fixed point as dataset preprocessing, so the
     # transport root is joint zero, as required by InputProcess.
     name = os.path.splitext(os.path.basename(path))[0]
-    cond, _, _, results = encode_motion_files_on_rest_pose(name, path, [path], action_group=action_group)
+    cond, _, _, results = encode_motion_files_on_rest_pose(name, path, [path])
     motion = results[0]['motion']
     _inherit_canonical_stats_from_dataset(name, cond, reference_cond_path)
     first = next(iter(cache_cond.values()))
@@ -200,109 +176,27 @@ def _load_raw_encoder_reference(path, reference_cond_path, cache_cond, action_gr
 
 
 def _extract_edit_reference(reference_motion_path, target_cond, target_type,
-                            reference_cond_path, cond_dict, output_dir, action_group=None):
+                            reference_cond_path, cond_dict, output_dir):
     """Raw animation -> feature ``.npy`` on the target skeleton, for an edit.
 
     The file's own bind pose is its rest pose, so the clip is self-contained: it
-    is preprocessed exactly like an encoded reference, and no retarget happens.
+    uses the dataset preprocessing pipeline, and no retarget happens.
     An edit lives on the target skeleton, so the rig the file carries must be
     the target's own.
     """
-    features, source_cond = _load_raw_encoder_reference(
-        reference_motion_path, reference_cond_path, cond_dict, action_group=action_group)
+    features, source_cond = _load_raw_edit_source(
+        reference_motion_path, reference_cond_path, cond_dict)
     source_parents = np.asarray(source_cond['parents'])
     target_parents = np.asarray(target_cond['parents'])
     if source_parents.shape != target_parents.shape or not np.array_equal(source_parents, target_parents):
         raise ValueError(
             f"{reference_motion_path} carries a {len(source_parents)}-joint skeleton that is not "
             f"'{target_type}' ({len(target_parents)} joints, different hierarchy). Editing runs on the "
-            "target skeleton, so the file must be the same rig; drop --skip_timesteps / --inpaint_* / "
-            "--outpaint to drive the target with it as an encoded reference instead."
+            "target skeleton, so the file must be the same rig. Use the motion autoencoder "
+            "for cross-skeleton transfer."
         )
     base = os.path.splitext(os.path.basename(reference_motion_path))[0]
     out_npy = os.path.join(output_dir, f"_reference_{base}.npy")
     np.save(out_npy, features)
     print(f"  Reference features {features.shape} (from the file's own bind pose) -> {out_npy}")
     return out_npy
-
-
-def _prepare_encoder_reference_bundle(features, source_cond, *, batch_size, n_frames,
-                                      visible_frames, min_length=20):
-    """Source features use the existing window resampling rule on their own rig."""
-    from data_loaders.reference import collate_reference, reference_sample
-    from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-    if features.ndim != 3 or features.shape[1] != len(source_cond['parents']):
-        raise ValueError('Reference features do not match the source skeleton')
-    if int(source_cond.get('translation_root_index', 0)) != 0:
-        raise ValueError('Reference source must use the canonical joint-zero translation root; reprocess the source')
-    if features.shape[2] != 12 or not np.isfinite(features).all() or len(features) < 1:
-        raise ValueError('Reference requires finite [T, J_source, 12] features')
-    # This packs canonical features using SOURCE statistics / rest, never target
-    # indices. The existing crop budget and endpoint interpolation are shared.
-    bundle = _prepare_img2img_reference_bundle(
-        None, None, source_cond, max_joints=features.shape[1], target_feature_len=12,
-        batch_size=1, requested_output_frame_count=n_frames,
-        requested_visible_frame_count=visible_frames, min_length=min_length,
-        preloaded_features=features,
-    )
-    sample = reference_sample(bundle['reference_physical'], source_cond,
-                              source_cond['joints_names_embs'])
-    canvas = bundle['reference_motion'].expand(batch_size, -1, -1, -1)
-    return collate_reference(
-        [sample] * batch_size, canvas,
-        canvas.new_zeros(batch_size, canvas.shape[1], source_cond['joints_names_embs'].shape[-1]),
-        canvas.new_zeros(batch_size, canvas.shape[1], JOINT_STRUCT_DIM),
-    )
-
-
-def _prepare_window_encoder_reference(window, cond, *, n_joints):
-    """The encoder input of an already sampled window, one reference per row.
-
-    ``window`` is the sampler's canonical ``[B, J, F, T]`` output on ``cond``'s
-    rig (the completed reference of a two-pass outpaint, whose rows differ). It
-    is decoded to physical features and goes through the same builder as a
-    loaded clip, so the encoder sees the frames the next pass clamps to.
-    """
-    from data_loaders.reference import collate_reference, reference_sample
-    from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
-    from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-    if int(cond.get('translation_root_index', 0)) != 0:
-        raise ValueError('Reference source must use the canonical joint-zero translation root; reprocess the source')
-    rows = window[:, :n_joints]
-    physical = canonical_to_physical_hml(rows.float(), cond).permute(0, 3, 1, 2).cpu().numpy()
-    names = cond['joints_names_embs']
-    samples = [reference_sample(row, cond, names) for row in physical]
-    return collate_reference(
-        samples, rows,
-        rows.new_zeros(rows.shape[0], rows.shape[1], names.shape[-1]),
-        rows.new_zeros(rows.shape[0], rows.shape[1], JOINT_STRUCT_DIM),
-    )
-
-
-def _edit_uses_self_reference(*, reference_edit, ref_encoder, inpaint_frames):
-    """Whether an edit is conditioned on the reference's own z.
-
-    A frame inpaint is: training gives most rows the target's own window as
-    reference, and with no z the denoiser falls back to its unconditional prior
-    across the re-drawn frames (they sink and drift toward another gait). The
-    inpainted frames are hidden from the encoder, as training hides its
-    re-noised span; the frames around them still carry the motion. A joint-only
-    inpaint runs without z: hiding the re-drawn joints leaves z nothing about
-    them, and the label is what drives them. So does a plain img2img edit
-    (--skip_timesteps alone), where a label can steer it away from defects in
-    the reference, and a length extension's pass that appends frames.
-    """
-    return bool(reference_edit and ref_encoder and inpaint_frames)
-
-
-def _hide_inpaint_region_from_reference(reference, inpaint_mask):
-    """Withhold the inpainted frames from the encoder, as training withholds its
-    re-noised span (``GaussianDiffusion._hide_corruption_from_reference``).
-
-    Every joint on a re-drawn window frame is hidden (a joint subset on top of
-    the frame range is covered by that). ``inpaint_mask`` is the sampler's
-    ``[B, J, 1, T]`` mask, 1 = re-drawn.
-    """
-    hidden = (inpaint_mask[:, :, 0, :] > 0).any(dim=1)
-    reference['ref_frame_mask'] = hidden.to(reference['ref_frame_mask'].device)
-    return reference

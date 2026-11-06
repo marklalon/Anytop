@@ -286,7 +286,7 @@ def reference_loop_cycles(requested_cycles, *, loop, verbose=True):
     1 on a loop window, ``None`` on an open one.
 
     A reference is taken to be unseen, so how many cycles it holds is not
-    known; the model reads a reference-active loop row as one cycle anyway.
+    known; the edit sampler therefore passes one cycle for the whole window.
     An explicit ``--loop_cycles`` is refused rather than ignored.
     """
     if requested_cycles is not None:
