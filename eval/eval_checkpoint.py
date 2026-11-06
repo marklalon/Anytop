@@ -4,22 +4,12 @@ Checkpoint evaluation harness
 =============================
 
 Given a single checkpoint path, run a battery of generation tasks (plain
-generation, energy-conditioned loops, convert-to-loop, and -- motion backend
-only -- frame/joint inpainting and outpaint), score every generated clip with
+generation, energy-conditioned loops, convert-to-loop, frame/joint inpainting
+and outpaint), score every generated clip with
 the motion quality evaluator, and write a portable HTML motion review report.
 
-Generation tasks call ``sample.generate`` or ``sample.generate_latent`` in-process
-with shared model weights. The backend follows the checkpoint's kind (each
-trainer saves under its own file name, see ``_is_latent_checkpoint``);
-``--backend`` overrides it. Motion tasks use ``batch_size=4 --amp_dtype fp32``.
-Latent tasks run generate_latent.py in fp32 with 4 samples per task (a task
-``--batch_size`` overrides it) against the frozen AE the checkpoint was trained
-with. A relocated AE can be selected with ``--ae_checkpoint``,
-``checkpoint.AE_CHECKPOINT``, or a task's ``--ae_checkpoint``; its hash must
-match training. A single-species ``--cond_path`` auto-selects the target
-skeleton; otherwise name it with ``--object_type``. Latent tasks reject
-``--reference_motion`` and motion-only editing flags (inpaint/outpaint);
-use the autoencoder for motion transfer.
+Generation tasks call ``sample.generate`` in-process with shared model weights.
+Tasks use ``batch_size=4 --amp_dtype fp32``.
 Each task's clips are scored in-process with the motion quality scorer
 (``eval/motion_quality/quality.py``): every clip gets a physical-plausibility
 and a data-prior score in [0, 1], its quality is their geometric mean, and a
@@ -55,8 +45,8 @@ root. See :func:`_resolve_output_root`.
 
 By default the evaluation runs *incrementally*: existing task outputs are
 kept and re-scored, and only newly-added tasks are generated.  Each task's
-generate.py flags — the contents of any referenced motion/cond files, and the
-frozen AE's digest — are checksummed into a ``task_params.json`` sidecar; if a
+generate.py flags and the contents of any referenced motion/cond files
+are checksummed into a ``task_params.json`` sidecar; if a
 task's parameters change (e.g. its entry in the task config is edited, or a
 reference file is modified in place), the stale output is wiped and the task is
 regenerated.  Pass
@@ -130,17 +120,9 @@ _DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
 _DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
-_PATH_FLAGS = ("--reference_motion", "--cond_path", "--ae_checkpoint")
-# The subset whose file *contents* feed the per-task checksum. The frozen AE is
-# the same file for every task of a battery, so it is hashed once per run and
-# folded in as a salt instead of being re-read (hundreds of MB) per task.
-_CONTENT_HASH_FLAGS = ("--reference_motion", "--cond_path")
+_PATH_FLAGS = ("--reference_motion", "--cond_path")
+_CONTENT_HASH_FLAGS = _PATH_FLAGS
 
-# Checkpoint families a run dir can hold, keyed by backend. Latent runs save
-# ``latent_diffusion*.pt``; motion runs save ``model<N>.pt``.
-_CHECKPOINT_PATTERNS = {"motion": ("model*.pt",), "latent": ("latent_diffusion*.pt",)}
-_ALL_CHECKPOINT_PATTERNS = ("model*.pt", "latent_diffusion*.pt")
-_MOTION_CHECKPOINT_RE = re.compile(r"model\d+\.pt")
 # generate.py flags every task shares (model_path / output_dir are added per
 # task). fp32: bf16 rounds each frame of the x0 prediction independently, and
 # that white noise inflates the Jerk / Snap / SpectralFlatness scores this
@@ -253,8 +235,6 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
         for j in range(len(args) - 1):
             if args[j] in _PATH_FLAGS:
                 resolved = _resolve_arg_path(args[j + 1], _ANYTOP_DIR)
-                if args[j] == "--ae_checkpoint" and Path(resolved).is_dir():
-                    resolved = str(Path(resolved) / "autoencoder.pt")
                 # Fast-fail on missing paths (sentinel passes through).
                 if resolved != _LAST_OUTPUT and not Path(resolved).is_file():
                     raise ValueError(
@@ -303,13 +283,8 @@ def _resolve_output_root(checkpoint: dict, run_name: str, model_name: str) -> Pa
     return (base / model_name).resolve()
 
 
-def _resolve_checkpoint(checkpoint: dict, backend: str = "auto") -> Path:
-    """Resolve a config checkpoint, choosing the newest model when omitted.
-
-    ``backend`` restricts the automatic choice to one checkpoint family (motion
-    runs save ``model<N>.pt``, latent runs ``latent_diffusion*.pt``) so a run dir
-    that holds both after a backend switch cannot silently pick the other one.
-    """
+def _resolve_checkpoint(checkpoint: dict) -> Path:
+    """Resolve a config checkpoint, choosing the newest model when omitted."""
     run_name = checkpoint["RUN_NAME"].strip()
     checkpoint_dir = _ANYTOP_DIR / "save" / run_name
     model_file = checkpoint.get("MODEL_FILE")
@@ -320,7 +295,7 @@ def _resolve_checkpoint(checkpoint: dict, backend: str = "auto") -> Path:
             model_path = checkpoint_dir / model_path
         return model_path.resolve()
 
-    patterns = _CHECKPOINT_PATTERNS.get(backend, _ALL_CHECKPOINT_PATTERNS)
+    patterns = ("model*.pt",)
     candidates = sorted(
         [path for pattern in patterns for path in checkpoint_dir.glob(pattern)],
         key=lambda path: path.stat().st_mtime,
@@ -332,46 +307,6 @@ def _resolve_checkpoint(checkpoint: dict, backend: str = "auto") -> Path:
             "(set checkpoint.MODEL_FILE to choose one)"
         )
     return candidates[0].resolve()
-
-
-class LatentEvaluationRuntime:
-    """Lazy cache shared by latent tasks (denoiser, frozen AE and normalizer)."""
-
-    def __init__(self):
-        self.cache = {}
-
-
-def _is_latent_checkpoint(model_path: Path) -> bool:
-    """Whether a checkpoint holds latent-diffusion weights.
-
-    Each trainer saves under its own fixed name (``latent_diffusion.pt`` vs
-    ``model<N>.pt``), so the name answers this without loading hundreds of MB.
-    Only an unfamiliar name pays for reading the stored ``kind``, and
-    ``--backend`` overrides either way.
-    """
-    if model_path.name.startswith("latent_diffusion"):
-        return True
-    if _MOTION_CHECKPOINT_RE.fullmatch(model_path.name):
-        return False
-    import torch
-    from utils.latent_util import LATENT_CHECKPOINT_VERSION
-
-    payload = torch.load(model_path, map_location="cpu", weights_only=False)
-    return isinstance(payload, dict) and payload.get("kind") == LATENT_CHECKPOINT_VERSION
-
-
-def _latent_score_metadata(task_dir: Path, scorer) -> tuple[str | None, dict | None]:
-    """Latent filenames include a suffix and escape namespaced species keys.
-
-    Use the generator's exact species/cond instead of guessing from filenames.
-    This also works when existing outputs are re-scored without loading weights.
-    """
-    path = task_dir / "generation.json"
-    if not path.is_file():
-        return None, None
-    metadata = json.loads(path.read_text(encoding="utf-8"))
-    cond = _register_cond_path(scorer, metadata["cond_path"]) if metadata.get("cond_path") else None
-    return metadata.get("object_type"), cond
 
 
 # ── Task parameter checksum (incremental change detection) ───────────────────
@@ -391,8 +326,7 @@ def _file_content_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _task_param_hash(extra_args: list[str], *, latent: bool = False,
-                     ae_sha: str | None = None) -> str:
+def _task_param_hash(extra_args: list[str]) -> str:
     """Deterministic SHA-256 checksum of a task's generate.py flags.
 
     Hashes ``_COMMON_GENERATE_ARGS`` followed by the task's ordered argument
@@ -408,15 +342,10 @@ def _task_param_hash(extra_args: list[str], *, latent: bool = False,
     digest and forces a regen. The ``$LAST_OUTPUT`` sentinel is left as-is (it
     is resolved per-run from the previous task's output, not a fixed file).
 
-    ``latent`` marks the digest as produced by the latent backend, so latent and
-    motion output can never share a checksum. ``ae_sha`` is the frozen AE's
-    content digest, hashed once per run and shared by every task.
     """
     common_args = _COMMON_GENERATE_ARGS
     hashed_args = [*common_args, *extra_args]
-    parts: list[str] = ["latent_backend_v1"] if latent else []
-    if ae_sha:
-        parts.append(f"ae_sha256:{ae_sha}")
+    parts: list[str] = []
     for i, arg in enumerate(hashed_args):
         parts.append(arg)
         if i > 0 and hashed_args[i - 1] in _CONTENT_HASH_FLAGS and arg != _LAST_OUTPUT:
@@ -438,7 +367,7 @@ def _read_stored_hash(task_dir: Path) -> str | None:
         return None
 
 
-def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str, *, latent: bool = False) -> None:
+def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str) -> None:
     """Record a task's parameter checksum (and the args it covers) so a later
     incremental run can tell whether the parameters have changed."""
     meta_path = task_dir / _TASK_HASH_FILE
@@ -446,7 +375,6 @@ def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str, *, late
         json.dumps(
             {
                 "hash": digest,
-                "backend": "latent" if latent else "motion",
                 "common_args": list(_COMMON_GENERATE_ARGS),
                 "args": extra_args,
             },
@@ -743,8 +671,7 @@ def _build_record_from_existing(
 
     # Re-score existing clips.
     if file_token:
-        latent_species, latent_cond = _latent_score_metadata(task_dir, scorer)
-        object_type = latent_species or _task_object_type(file_token, latent_cond or task_cond)
+        object_type = _task_object_type(file_token, task_cond)
         record["score"] = _score_task(scorer, task_dir, file_token, object_type, score_label)
     else:
         print(f"    [WARN] {category}/task{index}: could not determine object_type; skipping scoring")
@@ -808,16 +735,8 @@ def run_task(
     prev_first_npy: Path | None,
     total: int = 0,
     current: int = 0,
-    *,
-    latent: bool = False,
-    ae_sha: str | None = None,
 ) -> dict:
-    """Run one generation task and return a result record.
-
-    ``latent`` and ``ae_sha`` must be the run-level values the caller also feeds
-    to ``_task_param_hash``: the checksum written here has to equal the one the
-    incremental runner compares against, or every task regenerates.
-    """
+    """Run one generation task and return a result record."""
     task_dir = root / category / f"task{index}"
     task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -872,17 +791,9 @@ def run_task(
     returncode = 0
     task_args = None
     try:
-        if latent:
-            from sample import generate_latent
-
-            with contextlib.redirect_stderr(stdout):
-                task_args = generate_latent.parser().parse_args(generate_argv)
-            with contextlib.redirect_stdout(stdout):
-                generate_latent.main(task_args, runtime=runtime.cache)
-        else:
-            task_args = generate_args(generate_argv)
-            with contextlib.redirect_stdout(stdout):
-                generate_main(task_args, runtime=runtime)
+        task_args = generate_args(generate_argv)
+        with contextlib.redirect_stdout(stdout):
+            generate_main(task_args, runtime=runtime)
     except SystemExit as exc:
         if exc.code not in (None, 0):
             returncode = int(exc.code) if isinstance(exc.code, int) else 1
@@ -896,7 +807,7 @@ def run_task(
     log_path.write_text(f"# {display_cmd}\n" + stdout.getvalue(), encoding="utf-8", errors="replace")
 
     if returncode != 0:
-        script = "generate_latent.py" if latent else "generate.py"
+        script = "generate.py"
         record["status"] = f"{script} failed (exit {returncode}) — see {log_path}"
         print(f"  [FAIL] {record['status']}")
         return record
@@ -904,7 +815,7 @@ def run_task(
     # Record the parameter checksum so a later incremental run can detect when
     # this task's flags change and regenerate instead of reusing stale output.
     _write_task_hash(task_dir, extra_args,
-                     _task_param_hash(extra_args, latent=latent, ae_sha=ae_sha), latent=latent)
+                     _task_param_hash(extra_args))
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -923,8 +834,7 @@ def run_task(
 
     # Score the generated clips in-process (scores.json per task).
     if file_token:
-        latent_species, latent_cond = _latent_score_metadata(task_dir, scorer)
-        object_type = latent_species or _task_object_type(file_token, latent_cond or task_cond)
+        object_type = _task_object_type(file_token, task_cond)
         record["score"] = _score_task(scorer, task_dir, file_token, object_type, score_label)
     else:
         print("  [WARN] could not determine object_type; skipping scoring")
@@ -975,15 +885,6 @@ def main() -> int:
         "--model_path", "--model-path", default=None,
         help="Optional checkpoint override (absolute, or relative to the Anytop dir). "
              "By default it is read from checkpoint.RUN_NAME/MODEL_FILE in the task config.",
-    )
-    parser.add_argument(
-        "--backend", choices=("auto", "motion", "latent"), default="auto",
-        help="Generation backend; auto detects latent checkpoints by their stored kind.",
-    )
-    parser.add_argument(
-        "--ae_checkpoint", "--ae-checkpoint",
-        help="Relocated frozen AE for latent generation (exact hash must match). "
-             "May also be set as checkpoint.AE_CHECKPOINT or per-task --ae_checkpoint.",
     )
     parser.add_argument(
         "--output_root", "--output-root", default=None,
@@ -1042,38 +943,13 @@ def main() -> int:
             model_path = (_ANYTOP_DIR / model_path).resolve()
     else:
         try:
-            model_path = _resolve_checkpoint(checkpoint, args.backend)
+            model_path = _resolve_checkpoint(checkpoint)
         except (OSError, ValueError) as exc:
             print(f"ERROR: cannot resolve checkpoint: {exc}", file=sys.stderr)
             return 1
     if not model_path.is_file():
         print(f"ERROR: checkpoint not found: {model_path}", file=sys.stderr)
         return 1
-
-    # The backend is a property of the run, not of a task dir: resolve it once so
-    # the runtime and every task checksum agree on it.
-    latent_backend = args.backend == "latent" or (
-        args.backend == "auto" and _is_latent_checkpoint(model_path))
-
-    ae_checkpoint = args.ae_checkpoint or checkpoint.get("AE_CHECKPOINT")
-    ae_sha = None
-    if ae_checkpoint:
-        ae_checkpoint = _resolve_arg_path(ae_checkpoint, _ANYTOP_DIR)
-        if Path(ae_checkpoint).is_dir():
-            ae_checkpoint = str(Path(ae_checkpoint) / "autoencoder.pt")
-        if not Path(ae_checkpoint).is_file():
-            print(f"ERROR: AE checkpoint not found: {ae_checkpoint}", file=sys.stderr)
-            return 1
-        # Hash once for the whole battery: every task binds the same file, and
-        # re-reading hundreds of MB per task would dominate the run.
-        ae_sha = _file_content_hash(Path(ae_checkpoint))
-        # A task-level --ae_checkpoint was already resolved and validated when
-        # the config was loaded; it wins, so do not append a second value.
-        tasks = [
-            (category, extra if "--ae_checkpoint" in extra
-             else ["--ae_checkpoint", ae_checkpoint, *extra], label)
-            for category, extra, label in tasks
-        ]
 
     run_name = model_path.parent.name                      # e.g. quadropeds_locomotion_slim_v2
     model_name = model_path.stem                           # e.g. model000020000
@@ -1127,10 +1003,6 @@ def main() -> int:
         nonlocal runtime
         if runtime is None:
             print("Preparing shared generation runtime (loads checkpoint once)...")
-            if latent_backend:
-                print("Using latent diffusion backend (bound frozen autoencoder).")
-                runtime = LatentEvaluationRuntime()
-                return runtime
             runtime_args = generate_args([
                 "--model_path", str(model_path),
                 *_COMMON_GENERATE_ARGS,
@@ -1148,13 +1020,12 @@ def main() -> int:
         # parameter checksum still matches the current flags. For motion output a
         # missing checksum is legacy/pre-checksum output: reuse it and backfill the
         # checksum so later runs are guarded (we can't know the old params, so we
-        # assume the output matches the current config). Latent output without a
-        # checksum cannot be told apart from motion output, so it regenerates.
+        # assume the output matches the current config).
         # --overwrite bypasses this check to regenerate everything.
-        current_hash = _task_param_hash(extra_args, latent=latent_backend, ae_sha=ae_sha)
+        current_hash = _task_param_hash(extra_args)
         stored_hash = _read_stored_hash(task_dir)
         output_exists = _first_output_npy(task_dir) is not None
-        params_match = (stored_hash is None and not latent_backend) or stored_hash == current_hash
+        params_match = stored_hash is None or stored_hash == current_hash
 
         if not args.overwrite and output_exists and params_match:
             print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [reuse existing] ===")
@@ -1173,7 +1044,7 @@ def main() -> int:
             # Backfill the checksum for legacy output so subsequent runs can
             # detect parameter changes against it.
             if stored_hash is None:
-                _write_task_hash(task_dir, extra_args, current_hash, latent=latent_backend)
+                _write_task_hash(task_dir, extra_args, current_hash)
             if record.get("reference_motion") == _LAST_OUTPUT and prev_first_npy is not None:
                 record["last_output_resolved"] = str(prev_first_npy)
             n_skipped += 1
@@ -1193,7 +1064,6 @@ def main() -> int:
             record = run_task(
                 _ensure_runtime(), scorer, model_path, category, index, extra_args, score_label,
                 root, prev_first_npy, total=total_tasks, current=task_num,
-                latent=latent_backend, ae_sha=ae_sha,
             )
         except Exception as exc:  # never let one task abort the whole battery
             print(f"  [ERROR] {category}/task{index} raised: {exc}")

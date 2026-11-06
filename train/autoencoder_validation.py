@@ -1,4 +1,4 @@
-"""Dedicated validation data shared by VAE and latent diffusion training."""
+"""Dedicated held-out validation data for autoencoder training."""
 from tqdm import tqdm
 
 from data_loaders.get_data import get_dataset_loader

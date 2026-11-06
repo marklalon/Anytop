@@ -31,7 +31,7 @@ from model.motion_autoencoder import (
     diagonal_gaussian_kl, motion_masks, to_working_motion,
 )
 from train.motion_reconstruction_losses import LOSS_WEIGHTS, MotionGeometryLosses, MotionReconstructionLosses
-from train.latent_validation import build_validation_loader
+from train.autoencoder_validation import build_validation_loader
 from train.training_loop import _fixed_validation_rng
 from utils.fixseed import fixseed
 from utils.checkpoint_cond import snapshot_training_cond

@@ -8,9 +8,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from train import latent_validation as validation
+from train import autoencoder_validation as validation
 from train import train_autoencoder as vae
-from train import train_latent_diffusion as diffusion
 from data_loaders.truebones.data import dataset as dataset_module
 from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
@@ -163,24 +162,9 @@ def test_empty_validation_does_not_run_model(monkeypatch, loader):
         pytest.fail('Empty validation must not evaluate a training sample')
 
     monkeypatch.setattr(vae, 'evaluate', unexpected)
-    monkeypatch.setattr(diffusion, 'evaluate', unexpected)
     device = torch.device('cpu')
     assert vae.evaluate_validation(None, loader, 16, device) is None
-    assert diffusion.evaluate_validation(None, None, None, None, loader, device) is None
 
-
-def test_diffusion_evaluates_all_val_batches_with_sample_weighting(monkeypatch):
-    batches = [(torch.full((2, 1), 2.0), {}), (torch.full((1, 1), 8.0), {})]
-    seen = []
-
-    def evaluate(model, ae, norm, process, batch, device):
-        seen.append(batch)
-        return {'decoded_mse': float(batch[0].mean())}
-
-    monkeypatch.setattr(diffusion, 'evaluate', evaluate)
-    report = diffusion.evaluate_validation(None, None, None, None, batches, torch.device('cpu'))
-    assert len(seen) == 2
-    assert report == {'decoded_mse': 4.0, 'sample_count': 3}
 
 
 def test_vae_evaluates_all_val_batches_with_sample_weighting(monkeypatch):

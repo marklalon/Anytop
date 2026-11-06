@@ -1,7 +1,7 @@
-# AnyTop：Motion Autoencoder 与 Latent Diffusion
+# AnyTop：Motion Autoencoder
 
-> Motion Autoencoder（AE）、共享动作重建损失及 Latent Diffusion 基础生成链路已实现。本文按当前实现说明数据流、条件语义与支持边界。
-> 本文不维护模型容量、损失权重或训练配置。实现完成不代表重建质量、生成质量或泛化能力已通过验收。
+> Motion Autoencoder（AE）及共享动作重建损失已实现。本文按当前实现说明数据流、条件语义与支持边界。
+> 本文不维护模型容量、损失权重或训练配置。实现完成不代表重建质量、迁移质量或泛化能力已通过验收。
 
 ## 1. 当前整体结构
 
@@ -127,7 +127,7 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 | `train/motion_reconstruction_losses.py` | 共享动作几何损失与 AE 重建目标 |
 | `train/train_autoencoder.py` | 独立训练、val 集评估、latent 置零/交换诊断与 checkpoint |
 | `sample/eval_autoencoder.py` | 显式预处理动作文件的整段重建、指标与导出 |
-| `train_tiny_vae_diffusion.bat`、`train_all_vae_diffusion.bat` | tiny / 全量数据的 VAE → latent diffusion 顺序训练入口 |
+| `train_tiny_autoencoder.bat`、`train_all_autoencoder.bat` | tiny / 全量数据的独立 AE/VAE 训练入口 |
 | `eval_autoencoder.bat` | 独立重建诊断入口 |
 
 训练入口遍历独立 val 集的 60 帧窗口，包含正常重建、latent 置零和批内交换对照，并记录姿态、动态、根运动及骨架误差。val 不继承训练集筛选条件，关闭训练增强；为空或没有满足最小长度的片段时跳过评估，不回退到训练集。训练入口只保存指标和 checkpoint，不导出重建动作。这些诊断用于检查瓶颈依赖，不直接证明表示解耦或未见骨架泛化。
@@ -136,103 +136,4 @@ x_hat = ae.decode(z, skeleton, frame_mask, time_metadata)
 
 Checkpoint 保存模型架构、权重、latent 布局、canonical 与解码内容版本、条件数据校验信息及续训状态。当前解码内容版本为 `latent_time_v2`；缺少物理时间投影的旧版本不能直接续训或诊断加载。
 
-AE 自重建与独立 latent diffusion 链路均已实现。跨骨架 latent 交换、未见骨架泛化、长尾动作细节和潜空间可生成性仍需实验验证；实现与接口测试不代表生成质量已经验收。
-
-## 6. Latent Diffusion
-
-Latent Diffusion 在冻结 AE 的连续 latent 上学习条件生成，与原动作空间 diffusion 使用独立的模型和 checkpoint。沿用现有动作标签、骨架、species 及时间条件的语义，改变去噪对象和条件注入位置。跨骨架动作迁移由 autoencoder 承载，latent diffusion 不再接收参考动作。
-
-### 6.1 数据流与训练目标
-
-```text
-增强后的目标动作 + 目标骨架 + 真实时间条件
-  → 冻结 Encoder → latent → 固定标准化 → z0
-  → 加噪 → zt
-  → 条件去噪器 → z0_hat
-  → decoder 敏感度加权的 latent MSE
-
-生成：latent 噪声 → 条件去噪 → 逆标准化
-  → 冻结 Decoder（目标骨架、真实时间条件）
-  → canonical 动作 → 物理转换 → 恢复输出长度与导出
-```
-
-Encoder 和 Decoder 始终保持 eval 模式并冻结权重。训练目标由 Encoder 在线、无梯度地产生；Decoder 只在训练前的敏感度分析中对 latent 求导，不进入每步训练图。去噪器预测干净的标准化 latent，使用固定的 global decoder 对角敏感度权重计算 `mean(w * (z0_hat - z0)^2)`，先对每个样本的时间、槽和通道归约，再对 batch 平均。训练使用均匀 timestep 采样，不计算在线动作空间的位置、旋转、骨骼或接缝损失。
-
-敏感度在同一个 global 标准化坐标中，通过 Rademacher 输出投影估计 `diag(J^T J)`；输出特征包含 canonical 位置、旋转和一帧位置差，排除 padding 关节。使用一个覆盖全部参考样本的均匀全局 reservoir，不按 subset 分组、配额或分别计算；`--sensitivity_samples` 表示全局总样本数，默认 64。直接对选中样本的敏感度求平均，仅保存一份 global 敏感度和训练权重。相对敏感度截断到 `[0.25, 4]` 后与均匀权重各占一半，再归一到均值 1，避免极端通道主导梯度。该权重实际用于普通、compile 和 CUDA Graph 训练，日志分别报告原始 `latent_mse`、`latent_sensitivity_mse` 和实际 `loss`。
-
-潜空间扩散复用现有前向加噪、反向后验、噪声日程和采样步映射，支持普通反向采样与 DDIM。标准化 latent 不套用动作空间的数值裁剪；最终生成完成后逆标准化，并只解码一次。
-
-### 6.2 固定窗口与时间语义
-
-**所有动作都重采样到同一个内部窗口，当前为 N=60；内部每一帧均有效。** 原始帧数不同不意味着内部存在 padding，因此没有时间维的无效帧，也不需要有效帧 mask：时间 attention 读取整个窗口，加噪和 MSE 覆盖全部帧。入口会校验内部窗口长度，拒绝带时间 padding 的输入。
-
-`resample_speed_cond` 表达重采样前源窗口与内部窗口的时长比例，保留原物理时长；`is_loop` 和 `loop_tile_count` 表达开放/循环状态及周期数。开放动作使用绝对位置与源帧时间，循环动作使用循环相位与物理周期长度；可选 temporal RoPE 处理时间关系。这些信息与表示噪声等级的 diffusion timestep 分开。
-
-latent diffusion 使用 `joint_name_drop_prob` 和 `rest_geom_joint_drop_prob` 对 batch 条件采样一次 mask，并将相同的条件同时交给冻结 AE 编码目标和 denoiser，避免两侧看到不同的骨架信息。去噪器直接使用目标周期数；需要时可通过显式 `temporal_rope_off` 对指定样本关闭 RoPE。冻结 AE 编码目标和最终 Decoder 始终使用真实目标时间条件。
-
-骨架关节数仍可变化，需要排除 padding 关节；这是骨架有效性处理，与时间 padding、关节编辑 mask 或参考隐藏帧均不同。
-
-### 6.3 去噪主干
-
-输入、输出均为逐帧 latent `z [B,T,K,d_z]`，时间维不压缩。输入投影后加入 learned slot identity、帧位置和物理时间特征。槽 identity 只区分 AE 的池化槽，不代表具体关节或肢体。
-
-每层依次执行：
-
-1. 同帧槽间 self-attention。
-2. 以 latent 为 query，cross-attention 读取目标静态骨架。
-3. 每槽沿整个窗口执行时间 attention。
-4. FFN 更新。
-
-目标骨架在每次条件前向中编码一次，供各层共享。真实关节图关系只用于骨架分支，不用于 latent 槽间注意力。主干保留逐层 timestep 注入和 action AdaLN，cross limb block 关闭。输出头直接预测标准化 latent，不经过动作空间的输出容器适配。
-
-### 6.4 条件来源
-
-动作和时间的共用编码逻辑由 `motion_conditioning.py` 提供，latent 模型调用时不启用参考门控。
-
-| 条件 | 当前作用 |
-|---|---|
-| 动作标签 | 沿用受控词表及 head/direction/modifier 角色槽；聚合为动作 token，同时加入 timestep embedding 并驱动各层 action AdaLN |
-| 静态骨架 | 关节名称、结构与 rest geometry 构成关节 token，经真实骨架图关系编码后供 latent 读取；`n_joints` 排除 padding 关节 |
-| species | 描述码与关节名共同产生 FiLM，在名称投影前调制；不作为独立的全局 timestep 条件 |
-| loop 与物理时长 | 决定帧位置、循环相位、物理时间嵌入及时间注意力策略 |
-
-缺标签、标签无效、整条动作 CFG drop 时，动作条件都进入同一个 learned null；加法注入与 AdaLN 使用同一个 token。角色槽 dropout 仅隐藏对应槽，与整条动作条件置空分别处理。
-
-species FiLM 在启用时对所有样本生效。species override 只替换描述码，不改变目标骨架、rest 或 canonical 统计。
-
-### 6.5 数据增强、标准化与 CFG
-
-训练沿用共享 loader，速度、循环拼接、拓扑、骨长及 rest 等增强在目标编码前完成，增强后的动作与目标骨架保持配对。名称和 geometry 的 batch mask 同时作用于 AE 编码与去噪条件；动作 CFG 只改变去噪条件，真实时间条件始终保留。当前使用在线编码，不维护 latent 缓存。
-
-训练入口支持 `--compile None|default|reduce-overhead`，默认 `None`；tiny 启动脚本启用 `--compile reduce-overhead`。编译范围为冻结 AE 的目标编码与去噪器训练前向，使用静态 shape、完整图；各关节桶首次使用时会编译。AE 编码保持 FP32，去噪器沿用 `amp_dtype`。归一化统计和 val 集验证使用 eager；优化器、EMA 和 checkpoint 始终使用原始模块，可在续训时切换编译模式。
-
-latent 标准化统计在训练开始前从所选训练动作的独立、干净参考流采集，沿 batch 和时间维归约，保留槽与通道维。所有 subset 始终共用一份 global 均值和标准差；训练和生成都不按 subset 选择统计量，也不对每段动作单独消除均值或幅度。参考流按完整遍历重复，避免按长度排序的数据前缀获得额外权重。确定性 AE 使用编码结果；VAE 支持 posterior 均值或采样，采样模式的统计计入 posterior 方差，退化维度通过标准差下限处理。统计和敏感度共享 Encoder 前向并缓存到 AE 目录；敏感度权重同时嵌入训练 checkpoint，续训不依赖缓存文件继续存在。
-
-动作 CFG 在标准化 latent 的干净样本预测上组合，然后统一逆标准化和解码。条件与 base 分支仅切换动作标签的启用状态，其余条件一致；使用引导前会检查动作条件和训练时的 null 分支支持。引导按实际噪声日程分段，低噪声阶段回到普通条件预测。最终 Decoder 的目标骨架与真实时间条件不随 CFG 分支变化。
-
-## 7. Latent Diffusion 实现入口与边界
-
-| 文件 | 职责 |
-|---|---|
-| `model/latent_motion_denoiser.py` | 槽时空去噪主干与静态骨架分支 |
-| `model/motion_conditioning.py` | 共用动作槽、时间条件及条件 dropout；参考逻辑仅供动作空间模型使用 |
-| `diffusion/latent_diffusion.py` | latent 加噪、干净样本 MSE 和无动作域裁剪的采样 |
-| `utils/latent_util.py` | 冻结 AE、真实条件筛选、标准化与 checkpoint 绑定校验 |
-| `train/train_latent_diffusion.py` | 在线编码训练、val 集验证、EMA 与保存续训 |
-| `train/latent_validation.py` | VAE 与 latent diffusion 共用的独立 val 加载器及空集处理 |
-| `sample/generate_latent.py` | 条件解析、CFG、输出长度恢复及动作导出 |
-| `train_tiny_vae_diffusion.bat`、`train_all_vae_diffusion.bat` | VAE 成功训练后使用其 checkpoint 训练 latent diffusion |
-
-checkpoint 保存去噪器及续训状态，绑定 AE 文件 hash、权重选择、架构、canonical/解码内容版本、latent 布局、global 标准化统计、敏感度权重及训练目标版本，以及动作词表/角色槽、species 描述表、时间合同和扩散预测语义。species 描述表随模型目录保存，AE 本体保持独立。加载和续训会校验相应绑定；当前格式为 `latent_diffusion_v2`，时间合同为 `fixed60_v1`，不包含 reference 合同或能力声明。旧 subset 标准化 checkpoint 不再支持；旧 global、均匀 MSE checkpoint 仍可生成，但不能静默切换为敏感度 loss 续训，需使用新的 run。
-
-生成沿用现有动作标签、species、长度先验、loop 判断和周期解析。生成动作由冻结 Decoder 解码后，转换到物理空间、恢复所需输出长度并导出。
-
-当前支持无动作标签生成、动作条件生成和 species 条件。参考动作迁移使用 autoencoder。**不支持时间 padding、joint mask、temporal-span mask、renoise、img2img、inpaint joints/frames 或 outpaint。** 不接受编辑或参考请求；共享 loader 携带的 `ref_*` 占位字段在送入设备前统一移除，不加载参考配对数据。
-
-验证遍历独立 val 集，使用中间噪声去噪结果，按样本数汇总 latent MSE、解码 canonical MSE 和 AE 重建基线；保留末尾不足一个 batch 的样本，空 val 集跳过验证。标准化统计仍只从训练分布采集。这不是完整反向采样的质量验收；条件响应、动作细节、根轨迹、循环接缝及未见骨架泛化仍需生成实验评估。续训恢复模型、优化器、AMP 和主进程 RNG，worker/prefetch 数据流重新启动，不保证逐 batch 精确复现；旧 checkpoint 中的训练评估批不再使用。
-
-## 8. 参考
-
-- [当前参考编码器设计](reference_encoder.md)：参考迁移表示与完整动作重建的区别。
-- [当前模型结构](anytop_model_architecture.md)：现有主干与动作空间生成路径。
-- [MLD: Executing Your Commands via Motion Diffusion in Latent Space](https://arxiv.org/abs/2212.04048)：连续潜空间扩散路线参考。
+AE 自重建与跨骨架迁移链路已实现。跨骨架 latent 交换、未见骨架泛化、长尾动作细节仍需实验验证；实现与接口测试不代表迁移质量已经验收。
