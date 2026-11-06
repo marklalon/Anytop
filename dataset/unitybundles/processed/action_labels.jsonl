@@ -100,6 +100,7 @@
 {"clip": "IAC_Mammoth_DamageHeavy", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_DamageLight", "action_group": "stationary", "action_label": "hurt", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Die", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "IAC_Mammoth_DieMirror", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Fall", "action_group": "locomotion", "action_label": "fall, jump", "is_loop": true, "reviewed": true}
 {"clip": "IAC_Mammoth_GetUp", "action_group": "transition", "action_label": "getup", "is_loop": false, "reviewed": true}
 {"clip": "IAC_Mammoth_Idle", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -194,6 +195,7 @@
 {"clip": "KI_CasterMage_Damage02", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Death01A", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
 {"clip": "KI_CasterMage_Death02A", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_CasterMage_Death02AMirror", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
 {"clip": "KI_CasterMage_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Idle02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_CasterMage_Jump01Fall", "action_group": "locomotion", "action_label": "fall, jump", "is_loop": true, "reviewed": true}
@@ -303,10 +305,45 @@
 {"clip": "KI_Human_Walk01Forwards", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Walk01Left", "action_group": "locomotion", "action_label": "walk, left", "is_loop": true, "reviewed": true}
 {"clip": "KI_Human_Walk01Right", "action_group": "locomotion", "action_label": "walk, right", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance01", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance0201", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance0202", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance0203", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance03", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance04", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance05", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance06", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance07", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance08", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance09", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance10", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance11", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance12", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance13", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance14A", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance15", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance16", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance17A", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance18", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance19", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance20", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance21", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance22", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance23", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance24", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance25", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance2601", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance2602", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance2603", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance27", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance28", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance29", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "KI_Performer_Dance30", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
 {"clip": "KI_Slinger_Damage01", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "KI_Slinger_Damage02", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "KI_Slinger_Death01A", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "KI_Slinger_Death02A", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "KI_Slinger_Death02AMirror", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "KI_Slinger_Idle01Action01", "action_group": "stationary", "action_label": "talk", "is_loop": true, "reviewed": true}
 {"clip": "KI_Slinger_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Slinger_Idle02Action01", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -392,10 +429,14 @@
 {"clip": "KI_Villager_CarryingWalk01", "action_group": "locomotion", "action_label": "walk, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Cooking01Loop", "action_group": "stationary", "action_label": "idle, cook", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Cooking02Loop", "action_group": "stationary", "action_label": "idle, cook", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking0301Drop", "action_group": "stationary", "action_label": "putdown, left", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking0301Get", "action_group": "stationary", "action_label": "pickup, left", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking0302Drop", "action_group": "stationary", "action_label": "putdown, left", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_Cooking0302Get", "action_group": "stationary", "action_label": "pickup, left", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Cooking0301Drop", "action_group": "stationary", "action_label": "putdown, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0301DropMirror", "action_group": "stationary", "action_label": "putdown, right", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0301Get", "action_group": "stationary", "action_label": "pickup, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0301GetMirror", "action_group": "stationary", "action_label": "pickup, right", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0302Drop", "action_group": "stationary", "action_label": "putdown, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0302DropMirror", "action_group": "stationary", "action_label": "putdown, right", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0302Get", "action_group": "stationary", "action_label": "pickup, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_Villager_Cooking0302GetMirror", "action_group": "stationary", "action_label": "pickup, right", "is_loop": false, "reviewed": true}
 {"clip": "KI_Villager_Cooking04Loop", "action_group": "stationary", "action_label": "idle, cook", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Damage01", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Damage02", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
@@ -414,10 +455,15 @@
 {"clip": "KI_Villager_Gathering02", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Gathering03", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking01A", "action_group": "stationary", "action_label": "work, right, crouch, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_HammerWorking01AMirror", "action_group": "stationary", "action_label": "work, left, crouch, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking02", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_HammerWorking02Mirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking03", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_HammerWorking03Mirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking04A", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_HammerWorking04AMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_HammerWorking05A", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_HammerWorking05AMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Idle01Action01", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Idle01Action02", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Idle01", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -425,19 +471,25 @@
 {"clip": "KI_Villager_PickaxeMining01", "action_group": "stationary", "action_label": "work, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_PickaxeMining02", "action_group": "stationary", "action_label": "work, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_PickaxeMining03", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_PickaxeMining03Mirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_PickaxeWalk01", "action_group": "locomotion", "action_label": "walk, forward, weapon", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Run01", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackIdle01", "action_group": "stationary", "action_label": "idle, weapon", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackPlantingSeeds01", "action_group": "stationary", "action_label": "work, right", "is_loop": true, "reviewed": true}
-{"clip": "KI_Villager_SackPlantingSeeds02", "action_group": "stationary", "action_label": "putdown, crouch", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_SackPlantingSeeds01Mirror", "action_group": "stationary", "action_label": "work, left", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_SackPlantingSeeds02", "action_group": "stationary", "action_label": "putdown, right, crouch", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_SackPlantingSeeds02Mirror", "action_group": "stationary", "action_label": "putdown, left, crouch", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackRun01", "action_group": "locomotion", "action_label": "run, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_SackWalk01", "action_group": "locomotion", "action_label": "walk, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Sawing01", "action_group": "stationary", "action_label": "work, right, saw", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Sawing01Mirror", "action_group": "stationary", "action_label": "work, left, saw", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Sawing02", "action_group": "stationary", "action_label": "work, saw", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_ShovelWorking01", "action_group": "stationary", "action_label": "work, shovel", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_ShovelWorking02", "action_group": "stationary", "action_label": "work, shovel", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Skinning01A", "action_group": "stationary", "action_label": "work, right, crouch, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Skinning01AMirror", "action_group": "stationary", "action_label": "work, left, crouch, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Skinning02A", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "KI_Villager_Skinning02AMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_Walk01", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "KI_Villager_WateringCanPouring01Loop", "action_group": "stationary", "action_label": "work", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Attack01", "action_group": "stationary", "action_label": "attack, stab", "is_loop": true, "reviewed": true}
@@ -451,6 +503,7 @@
 {"clip": "KI_Warrior_Block01Shield", "action_group": "stationary", "action_label": "idle, shield", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_CombatIdle01", "action_group": "stationary", "action_label": "idle, weapon", "is_loop": true, "reviewed": true}
 {"clip": "KI_Warrior_Death01A", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "KI_Warrior_Death01AMirror", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
 {"clip": "KI_Warrior_Death02A", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "KI_Warrior_Death03A", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "KI_Warrior_Death04A", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
@@ -489,6 +542,7 @@
 {"clip": "LH_Hero_CastSpell", "action_group": "stationary", "action_label": "attack, right, cast", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CastSpellMirror", "action_group": "stationary", "action_label": "attack, left, cast", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_ChopTree", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_ChopTreeMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Clapping", "action_group": "stationary", "action_label": "idle, clap", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CrossbowAim", "action_group": "stationary", "action_label": "idle, aim, gun", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CrossbowReload", "action_group": "stationary", "action_label": "idle, reload", "is_loop": true, "reviewed": true}
@@ -497,6 +551,40 @@
 {"clip": "LH_Hero_CrossbowRightShootAttack", "action_group": "stationary", "action_label": "attack, right, gun", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_CrossbowShootAttack", "action_group": "stationary", "action_label": "attack, left, gun", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Crying", "action_group": "stationary", "action_label": "idle, cry", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance01Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance0201Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance0202Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance0203Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance03Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance04Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance05Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance06Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance07Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance08Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance09Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance10Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance11Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance12Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance13Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance14ARetarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance15Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance16Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance17ARetarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance18Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance19Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance20Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance21Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance22Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance23Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance24Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance25Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance2601Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance2602Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance2603Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance27Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance28Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance29Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_Dance30Retarget", "action_group": "stationary", "action_label": "dance", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Dash", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Defend", "action_group": "stationary", "action_label": "idle, block", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Die", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
@@ -544,6 +632,7 @@
 {"clip": "LH_Hero_ProjectileRightAttack01Mirror", "action_group": "stationary", "action_label": "attack, left, projectile", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Pull", "action_group": "locomotion", "action_label": "walk, backward, pull", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_PushButton", "action_group": "stationary", "action_label": "work, right", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_PushButtonMirror", "action_group": "stationary", "action_label": "work, left", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Push", "action_group": "locomotion", "action_label": "walk, forward, push", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Relax", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_RightPunchAttack", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
@@ -553,6 +642,7 @@
 {"clip": "LH_Hero_RunBackward", "action_group": "locomotion", "action_label": "run, backward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SawingWood", "action_group": "stationary", "action_label": "work, right, saw", "is_loop": true, "reviewed": true}
+{"clip": "LH_Hero_SawingWoodMirror", "action_group": "stationary", "action_label": "work, left, saw", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_ShakeHead", "action_group": "stationary", "action_label": "shake", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_Sitting", "action_group": "stationary", "action_label": "idle, sit", "is_loop": true, "reviewed": true}
 {"clip": "LH_Hero_SpawnGround", "action_group": "transition", "action_label": "spawn", "is_loop": false, "reviewed": true}
@@ -811,6 +901,7 @@
 {"clip": "MLH_Horseman_Attack02", "action_group": "stationary", "action_label": "attack, right, slash", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Horseman_Attack02Mirror", "action_group": "stationary", "action_label": "attack, left, slash", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Horseman_Death", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "MLH_Horseman_DeathMirror", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "MLH_Horseman_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Horseman_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Horseman_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -820,11 +911,14 @@
 {"clip": "MLH_Worker_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Pickup", "action_group": "stationary", "action_label": "pickup, left", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Worker_PickupMirror", "action_group": "stationary", "action_label": "pickup, right", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_WorkRoutine", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "MLH_Worker_WorkRoutineMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "MLH_Worker_WorkStart", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": false, "reviewed": true}
+{"clip": "MLH_Worker_WorkStartMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": false, "reviewed": true}
 {"clip": "MLS_BattleOwl_Attack01", "action_group": "stationary", "action_label": "attack, hover, charge", "is_loop": true, "reviewed": true}
 {"clip": "MLS_BattleOwl_Attack02WaveAttack", "action_group": "stationary", "action_label": "attack, hover, cast", "is_loop": true, "reviewed": true}
 {"clip": "MLS_BattleOwl_Die", "action_group": "transition", "action_label": "die, hover", "is_loop": false, "reviewed": true}
@@ -843,6 +937,7 @@
 {"clip": "MLS_Dryad_Attack01", "action_group": "stationary", "action_label": "attack, slash", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Attack02", "action_group": "stationary", "action_label": "attack, stab", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Die", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "MLS_Dryad_DieMirror", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "MLS_Dryad_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Dryad_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
@@ -859,14 +954,18 @@
 {"clip": "MLS_ElfRanger_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "MLS_ElfRanger_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_Die", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
+{"clip": "MLS_Knome_DieMirror", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
 {"clip": "MLS_Knome_GetHit", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_Run", "action_group": "locomotion", "action_label": "run, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_Victory", "action_group": "stationary", "action_label": "idle, happy", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_WorkPickup", "action_group": "stationary", "action_label": "pickup, left", "is_loop": true, "reviewed": true}
+{"clip": "MLS_Knome_WorkPickupMirror", "action_group": "stationary", "action_label": "pickup, right", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_WorkRoutine", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "MLS_Knome_WorkRoutineMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "MLS_Knome_WorkStart", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": false, "reviewed": true}
+{"clip": "MLS_Knome_WorkStartMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": false, "reviewed": true}
 {"clip": "MLS_RockGolem_Attack01", "action_group": "stationary", "action_label": "attack, right, swat", "is_loop": true, "reviewed": true}
 {"clip": "MLS_RockGolem_Attack02", "action_group": "stationary", "action_label": "attack, left, swat", "is_loop": true, "reviewed": true}
 {"clip": "MLS_RockGolem_Die", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
@@ -1650,6 +1749,7 @@
 {"clip": "PC_PolygonalWolf_BiteAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_BreathAttack", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Die", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "PC_PolygonalWolf_DieMirror", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Eating", "action_group": "stationary", "action_label": "idle, eat", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Howl", "action_group": "stationary", "action_label": "roar", "is_loop": true, "reviewed": true}
 {"clip": "PC_PolygonalWolf_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
@@ -2118,6 +2218,7 @@
 {"clip": "RU02_NoseRobot_BiteAttack", "action_group": "stationary", "action_label": "attack, bite", "is_loop": true, "reviewed": true}
 {"clip": "RU02_NoseRobot_CastSpell", "action_group": "stationary", "action_label": "attack, cast", "is_loop": true, "reviewed": true}
 {"clip": "RU02_NoseRobot_Die", "action_group": "transition", "action_label": "die, right", "is_loop": false, "reviewed": true}
+{"clip": "RU02_NoseRobot_DieMirror", "action_group": "transition", "action_label": "die, left", "is_loop": false, "reviewed": true}
 {"clip": "RU02_NoseRobot_Idle", "action_group": "stationary", "action_label": "idle", "is_loop": true, "reviewed": true}
 {"clip": "RU02_NoseRobot_Jump", "action_group": "stationary", "action_label": "jump, up", "is_loop": true, "reviewed": true}
 {"clip": "RU02_NoseRobot_LookAround", "action_group": "stationary", "action_label": "idle, look", "is_loop": true, "reviewed": true}
@@ -2277,10 +2378,12 @@
 {"clip": "TNR_Spearman_TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Spearman_Walk", "action_group": "locomotion", "action_label": "walk, forward", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Attack", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_AttackMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag01Idle", "action_group": "stationary", "action_label": "idle, carry", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag02Walk", "action_group": "locomotion", "action_label": "walk, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag03Run", "action_group": "locomotion", "action_label": "run, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag07Attack", "action_group": "stationary", "action_label": "work, right, carry, hammer", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_Bag07AttackMirror", "action_group": "stationary", "action_label": "work, left, carry, hammer", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Bag09TakeDamage", "action_group": "stationary", "action_label": "hurt, carry", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_DeathA", "action_group": "transition", "action_label": "die, backward", "is_loop": false, "reviewed": true}
 {"clip": "TNR_Worker_DeathB", "action_group": "transition", "action_label": "die, forward", "is_loop": false, "reviewed": true}
@@ -2292,9 +2395,12 @@
 {"clip": "TNR_Worker_Wood02Walk", "action_group": "locomotion", "action_label": "walk, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Wood03Run", "action_group": "locomotion", "action_label": "run, forward, carry", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Wood07Attack", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_Wood07AttackMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_Wood09TakeDamage", "action_group": "stationary", "action_label": "hurt", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_WorkingA", "action_group": "stationary", "action_label": "work, right, hammer", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_WorkingAMirror", "action_group": "stationary", "action_label": "work, left, hammer", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_WorkingB", "action_group": "stationary", "action_label": "work, right, crouch, hammer", "is_loop": true, "reviewed": true}
+{"clip": "TNR_Worker_WorkingBMirror", "action_group": "stationary", "action_label": "work, left, crouch, hammer", "is_loop": true, "reviewed": true}
 {"clip": "TNR_Worker_WorkingC", "action_group": "stationary", "action_label": "work, crouch", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Archer_AttackA", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}
 {"clip": "TTR_Archer_AttackB", "action_group": "stationary", "action_label": "attack, bow", "is_loop": true, "reviewed": true}

@@ -6,6 +6,7 @@
 {"species": "KI_Archer", "species_tags": ["Biped"]}
 {"species": "KI_CasterMage", "species_tags": ["Biped"]}
 {"species": "KI_Human", "species_tags": ["Biped"]}
+{"species": "KI_Performer", "species_tags": ["Biped"]}
 {"species": "KI_Slinger", "species_tags": ["Biped"]}
 {"species": "KI_Soldier", "species_tags": ["Biped"]}
 {"species": "KI_Villager", "species_tags": ["Biped"]}

@@ -1,2 +1,1 @@
-!skip-orientation-detection
 #skeleton exceeds MAX_JOINTS (*) for SYN_DNL_FireDragon
