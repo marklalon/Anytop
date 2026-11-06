@@ -37,7 +37,9 @@ under `docs/` may describe superseded intermediate states.
 
 The standalone AE/VAE supports motion reconstruction and cross-skeleton transfer.
 Motion diffusion uses action labels and skeleton conditions; it has no reference-motion encoder.
-Its `--reference_motion` option is limited to same-rig img2img/inpaint/outpaint editing and requires an editing option.
+Its `--reference_motion` option is limited to same-rig img2img editing and requires `--skip_timesteps`.
+
+TODO: Train dedicated models for inpaint/outpaint; motion diffusion does not provide these capabilities.
 See [docs/motion_autoencoder.md](docs/motion_autoencoder.md) for its architecture and training objective.
 Train with `train_tiny_autoencoder.bat [run_name]` or `train_all_autoencoder.bat [run_name]`;
 evaluate with `eval_autoencoder.bat --npy <preprocessed_motion.npy>`.

@@ -1,4 +1,4 @@
-"""Same-rig motion sources for img2img, inpaint and outpaint editing."""
+"""Same-rig motion sources for img2img editing."""
 import os
 
 import numpy as np

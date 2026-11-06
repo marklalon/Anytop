@@ -34,12 +34,14 @@ def test_diffusion_forward_needs_no_reference_and_has_no_reference_weights():
             joints_relations=torch.zeros(2, 4, 4, dtype=torch.long)))
     assert result.shape == (2, 4, 12, 5)
     assert torch.isfinite(result).all()
-    assert not any('reference' in key or '.ref_' in key for key in model.state_dict())
+    assert not any(
+        'reference' in key or '.ref_' in key or 'unreliable' in key or 'reliability_bias' in key
+        for key in model.state_dict()
+    )
 
 
 @pytest.mark.parametrize('options', [
-    {}, {'skip_timesteps': 0}, {'inpaint_joints': 'Spine'},
-    {'inpaint_frames': '1-5'}, {'outpaint': True},
+    {}, {'skip_timesteps': 0}, {'skip_timesteps': 5},
 ])
 def test_edit_source_requires_explicit_edit_options(options):
     assert parser_util.reference_requires_edit_options('motion.npy', **options) == (not options)
@@ -52,7 +54,7 @@ def test_generation_rejects_reference_without_edit_before_model_load(monkeypatch
     with pytest.raises(SystemExit):
         parser_util.generate_args(['--model_path', 'unused.pt', '--reference_motion', 'motion.npy'])
     args = parser_util.generate_args([
-        '--model_path', 'unused.pt', '--reference_motion', 'motion.npy', '--inpaint_frames', '1-5',
+        '--model_path', 'unused.pt', '--reference_motion', 'motion.npy', '--skip_timesteps', '5',
         '--action_label', 'walk, forward'])
     assert args.action_label == 'walk, forward'
 
@@ -73,3 +75,25 @@ def test_generation_parser_rejects_removed_reference_options():
             ('--ref_cfg_scale', '3')):
         with pytest.raises(SystemExit):
             parser.parse_args([option, value])
+
+
+@pytest.mark.parametrize("option", [
+    "joint_mask_prob", "unreliable_mask_drop_prob", "temporal_span_mask_prob",
+    "temporal_span_mask_min_frames", "temporal_span_mask_max_frames",
+    "temporal_span_seam_loss_weight", "temporal_span_seam_width", "renoise_same_level_prob",
+])
+def test_training_rejects_removed_completion_options(option):
+    parser = ArgumentParser()
+    parser_util.add_training_options(parser)
+    assert option not in vars(parser.parse_args(["--cond_path", "unused.npy"]))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--cond_path", "unused.npy", f"--{option}", "0"])
+
+
+@pytest.mark.parametrize("option", ["inpaint_joints", "inpaint_frames", "inpaint_include_subtree", "outpaint"])
+def test_generation_rejects_removed_completion_options(option):
+    parser = ArgumentParser()
+    parser_util.add_generate_options(parser)
+    assert option not in vars(parser.parse_args([]))
+    with pytest.raises(SystemExit):
+        parser.parse_args([f"--{option}"])

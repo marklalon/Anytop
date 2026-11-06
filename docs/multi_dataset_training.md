@@ -316,7 +316,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 |---|---|
 | [utils/retarget_cache.py](../utils/retarget_cache.py) | `_CACHE_DIR` 从 `dataset/truebones/zoo/truebones_processed/cache/retarget/` 移到 `<Anytop>/cache/retarget/`。缓存 key 是 prompt+messages 的 SHA-256（含骨骼名与长度），与物种名无关，迁移无冲突风险；旧目录条目已迁移到新目录，只读回退逻辑已移除 |
 | `param_utils.DEFAULT_DATASET_DIR` | 保留，仅作预处理/工具的默认值，不再被训练/推理引用 |
-| `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`、`tools/extract_action_categories.py` | 硬编码 cond 路径 → 统一 `--cond-path`（默认 checkpoint 同目录 cond.npy） |
+| `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/visualize_joint_name_embeddings.py`、`tools/extract_action_categories.py` | 硬编码 cond 路径 → 统一 `--cond-path`（默认 checkpoint 同目录 cond.npy） |
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
 | `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
@@ -387,6 +387,6 @@ P0 阶段需要把所有「按裸名直接索引 cond」的写法改为走 `reso
 
 - `sample/generate.py` 的 `_lookup_object_type_case_insensitive`
 - `eval/motion_quality/reference_bank.py` 的 `_resolve_lookup_key`
-- `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`
+- `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/visualize_joint_name_embeddings.py`
 - `tests/` 中以 `cond['Horse']` / `cond['Dragon']` 等字面量取 entry 的用例
 - `data_bridge/restore_glb_from_anytop.py` 中按 `object_type` 查 `tpose_reference_paths.jsonl` 的一段（sidecar 的 key 仍是裸名，需用 `species_name` 去 join）

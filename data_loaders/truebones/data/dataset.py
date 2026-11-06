@@ -668,28 +668,6 @@ def _limb_tip_mask(object_cond) -> np.ndarray:
     return tips
 
 
-def _limb_root_mask(object_cond) -> np.ndarray:
-    """Per-joint flag of each limb's root, the joint the subtree joint mask
-    hides the whole limb from: the top of its limb-end chain
-    (``limb_chain_id``), walked up through the ancestors on the same body side
-    until the parent is a midline joint -- the thigh or clavicle above a foot
-    or hand run. Without side labels the chain top is the root."""
-    parents = np.asarray(object_cond['parents'], dtype=np.int64)
-    chain_ids = np.asarray(object_cond['limb_chain_id'], dtype=np.int64)
-    side_labels = object_cond.get('joint_side_labels')
-    sides = [str(side) for side in side_labels] if side_labels is not None else []
-    roots = np.zeros(chain_ids.shape, dtype=np.bool_)
-    for joint, chain_id in enumerate(chain_ids):
-        parent = int(parents[joint])
-        if chain_id < 0 or (parent >= 0 and chain_ids[parent] == chain_id):
-            continue
-        side = sides[joint] if joint < len(sides) else 'center'
-        while side != 'center' and int(parents[joint]) > 0 and sides[int(parents[joint])] == side:
-            joint = int(parents[joint])
-        roots[joint] = True
-    return roots
-
-
 def _list_motion_files(motion_dir: str) -> list[str]:
     return sorted(path.name for path in Path(motion_dir).glob("*.npy"))
 
@@ -1020,8 +998,7 @@ class MotionDataset(data.Dataset):
             for object_key, entry in cond_dict.items()
         }
         # Per-joint, so the skeleton augmentations carry it with the rig; the
-        # limb tips and roots are picked from it per sample (_limb_tip_mask,
-        # _limb_root_mask).
+        # limb tips are picked from it per sample (_limb_tip_mask).
         for entry in cond_dict.values():
             entry['limb_chain_id'], entry['limb_wing'], entry['limb_reach'] = _build_limb_chains(entry)
         self.head_word_weights = parse_head_word_weights(head_word_weights)
@@ -1605,7 +1582,6 @@ class MotionDataset(data.Dataset):
         if return_aug_info:
             return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'autoencoder_view': paired_view,
-                'joint_mask_limb_roots': _limb_root_mask(cond),
                 'limb_tip_mask': _limb_tip_mask(cond),
                 'joint_struct': joint_struct,
                 'species_code': cond.get('species_code'),
@@ -1634,7 +1610,6 @@ class MotionDataset(data.Dataset):
             }
         return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'autoencoder_view': paired_view,
-            'joint_mask_limb_roots': _limb_root_mask(cond),
             'limb_tip_mask': _limb_tip_mask(cond),
             'joint_struct': joint_struct,
             'species_code': cond.get('species_code'),

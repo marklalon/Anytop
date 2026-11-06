@@ -1,9 +1,7 @@
 """Pairwise skeleton-topology codes for the graph attention bias.
 
 ``graph_dist`` and ``joint_relations`` are the *only* path by which the actual
-tree structure reaches the forward pass: ``parents`` is handed to the model but
-is read solely by ``MotionDiffusion._sample_subtree_joint_mask`` (an augmentation
-sampler), never as a conditioning input. Whatever these two matrices fail to
+tree structure reaches the forward pass. Whatever these two matrices fail to
 distinguish, the network cannot recover.
 
 The original codes distinguished very little. Measured over the 257 skeletons in

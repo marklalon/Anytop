@@ -1,15 +1,12 @@
 from model.motion_conditioning import MotionConditioningMixin, create_sin_embedding, _zero_init_mlp
 import torch
 import torch.nn as nn
-import numpy as np
 from model.motion_transformer import (
     GraphMotionDecoderLayer,
     GraphMotionDecoder,
     circular_phase_embedding,
     run_in_fp32,
 )
-from model.joint_mask_utils import sample_subtree_joint_mask_batch
-from utils.device_transfer import check_on_device, host_to_device
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHANNELS
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
@@ -34,6 +31,7 @@ from data_loaders.reference import REST_GEOM_DIM
 
 
 class MotionDiffusion(MotionConditioningMixin, nn.Module):
+    # TODO: Train dedicated models for localized motion completion/editing.
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
                  activation="gelu", t5_out_dim = 512,
@@ -58,19 +56,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.temporal_rope=bool(kargs.get('temporal_rope', False))
-        # Hidden widths of conditioning heads; 0 selects latent_dim.
-        self.action_adaln_bottleneck=int(kargs.get('action_adaln_bottleneck', 0))
-        self.species_film_bottleneck=int(kargs.get('species_film_bottleneck', 128))
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
-        if self.species_film_bottleneck < 0:
-            raise ValueError(
-                f"species_film_bottleneck must be >= 0, got {self.species_film_bottleneck}"
-            )
-        self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
-        self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
-        self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
-        self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 20))
-        self.unreliable_mask_drop_prob=float(kargs.get('unreliable_mask_drop_prob', 0.0))
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
         # It is applied on every row, with no CFG drop or null mode of its own.
@@ -121,43 +107,10 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         # decoder on top of the additive one (GraphMotionDecoder owns the head).
         # It exists exactly when there is a label to drive it.
         self.action_label_adaln = self.action_label_cond
-        if not 0.0 <= self.joint_mask_prob <= 1.0:
-            raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
-        if not 0.0 <= self.temporal_span_mask_prob <= 1.0:
-            raise ValueError(
-                f"temporal_span_mask_prob must be in [0, 1], got {self.temporal_span_mask_prob}"
-            )
-        if not 0.0 <= self.unreliable_mask_drop_prob <= 1.0:
-            raise ValueError(
-                f"unreliable_mask_drop_prob must be in [0, 1], got {self.unreliable_mask_drop_prob}"
-            )
-        if self.temporal_span_mask_min_frames < 1:
-            raise ValueError(
-                "temporal_span_mask_min_frames must be >= 1, got "
-                f"{self.temporal_span_mask_min_frames}"
-            )
-        if self.temporal_span_mask_max_frames <= 0:
-            raise ValueError("temporal_span_mask_max_frames must be >= 1")
-        if 0 < self.temporal_span_mask_max_frames < self.temporal_span_mask_min_frames:
-            raise ValueError(
-                "temporal_span_mask_max_frames must be >= temporal_span_mask_min_frames "
-                f"(got min={self.temporal_span_mask_min_frames}, max={self.temporal_span_mask_max_frames})"
-            )
-
         self.input_process = InputProcess(
             self.input_feats, self.latent_dim, t5_out_dim,
             species_cond=self.species_cond,
-            species_film_bottleneck=self.species_film_bottleneck,
         )
-        # Token-type embedding for "this (frame, joint) is being re-drawn",
-        # added to the input tokens right after InputProcess so the WHOLE trunk
-        # (spatial / temporal attention, FFN, and through them the cross-limb
-        # values and queries) can see the unreliable map. The cross-limb
-        # reliability biases alone are logit shifts, which softmax cancels the
-        # moment every valid joint of a frame is flagged -- whole-frame
-        # inpainting and temporal spans were invisible. Zero-init, so the
-        # path starts as a no-op.
-        self.unreliable_embedding = nn.Parameter(torch.zeros(self.latent_dim))
         # y['is_loop'] (0/1, whether the window is a closed cycle) is NOT summed
         # into the condition embedding. It selects the loop time encoding
         # (_frame_position_embedding, _tempo_frame_embedding): a closed window
@@ -225,7 +178,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
                                                         cross_limb_dim=self.cross_limb_dim,
                                                         cross_limb_last_n=self.cross_limb_last_n,
                                                         action_label_adaln=self.action_label_adaln,
-                                                        action_adaln_bottleneck=self.action_adaln_bottleneck,
                                                         last_layer_ff=self.last_layer_ff,
                                                         temporal_rope=self.temporal_rope)
             
@@ -234,229 +186,14 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
             self.feature_len, self.input_feats, self.max_joints, self.latent_dim
         )
 
-    @staticmethod
-    def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
-        """(nframes, B, J) float map from the (B, nframes, J) input; None when absent.
-
-        Padding joints are never flagged by either producer (the samplers draw
-        from valid joints only; inference maps derive from the inpaint mask over
-        real joints), so nothing is re-zeroed here.
-        """
-        if raw_mask is None:
-            return None
-        mask = raw_mask.to(device=device, dtype=dtype)
-        expected_shape = (bs, nframes, njoints)
-        if mask.shape != expected_shape:
-            raise ValueError(
-                "y['cross_limb_unreliable_mask'] must have shape "
-                f"{expected_shape}, got {tuple(mask.shape)}"
-            )
-        return mask.transpose(0, 1).contiguous()
 
     @staticmethod
     def _build_joint_key_padding_mask(njoints, n_joints, device):
         """Return the padding-only joint key mask used by attention.
 
-        Training-time subtree perturbation deliberately stays out of the
-        attention masks. Only structurally padded joints are masked here.
+        Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
-
-
-    def sample_subtree_joint_mask_train(self, y, njoints, device):
-        """Select subtrees of joints to perturb during training.
-
-        Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected),
-        or ``None`` if not in training mode or if ``joint_mask_prob == 0`` -- so eval-mode
-        loss reports a clean diffusion objective.
-
-        When the feature is on but the draw selects nothing, the return is an
-        all-False mask, NOT ``None``: ``None`` makes
-        ``training_losses`` drop ``y['cross_limb_unreliable_mask']``, and a key
-        set that varies between steps forces torch.compile to recompile the
-        forward the first time an empty batch comes up. An all-False mask is a
-        no-op for both the re-noise and the cross-limb reliability bias, so the
-        step is unchanged.
-
-        Called from ``GaussianDiffusion.training_losses`` AFTER ``q_sample``
-        to decide which joints' x_t slice should be re-noised at an independent
-        timestep drawn from ``[t, T)`` with fresh noise, so that those joints
-        carry strictly less information about x_0 than the rest of the sample. This trains
-        the cross-joint pathway to denoise robustly against per-joint
-        timestep mismatch -- the regime inpaint clamping produces at
-        inference. The model's forward itself stays vanilla.
-        """
-        if (not self.training) or self.joint_mask_prob <= 0.0:
-            return None
-        n_joints_cpu = torch.as_tensor(
-            y.get('n_joints_cpu', y['n_joints']), device='cpu', dtype=torch.int64
-        ).reshape(-1)
-        subtree_joint_mask = self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
-        if subtree_joint_mask is None:
-            subtree_joint_mask = torch.zeros(
-                (int(n_joints_cpu.shape[0]), int(njoints)), dtype=torch.bool, device=device
-            )
-        return subtree_joint_mask
-
-    def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
-        parents_batch = y.get('parents')
-        if parents_batch is None:
-            return None
-        limb_roots_batch = y.get('joint_mask_limb_roots')
-        if torch.is_tensor(n_joints):
-            n_joints_np = n_joints.detach().to(device='cpu', dtype=torch.int64).numpy()
-        else:
-            n_joints_np = np.asarray(n_joints, dtype=np.int64)
-
-        if torch.is_tensor(parents_batch):
-            parents_batch_np = parents_batch.detach().to(device='cpu', dtype=torch.int64).numpy()
-        else:
-            parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
-
-        if limb_roots_batch is None:
-            limb_roots_np = None
-        elif torch.is_tensor(limb_roots_batch):
-            limb_roots_np = limb_roots_batch.detach().to(device='cpu').numpy()
-        else:
-            limb_roots_np = np.asarray(limb_roots_batch, dtype=np.bool_)
-
-        subtree_joint_mask_np = sample_subtree_joint_mask_batch(
-            parents_batch=parents_batch_np,
-            limb_root_mask_batch=limb_roots_np,
-            n_joints=n_joints_np,
-            max_joints=njoints,
-            joint_mask_prob=self.joint_mask_prob,
-            rng=np.random,
-        )
-        if subtree_joint_mask_np is None:
-            return None
-        return host_to_device(subtree_joint_mask_np, device)
-
-    def sample_temporal_span_mask_train(self, y, njoints, nframes, device):
-        """Select contiguous temporal spans to perturb during training.
-
-        Returns a bool tensor of shape ``[B, njoints, nframes]`` (True =
-        re-noise that joint/frame cell), or ``None`` if not in training mode or
-        if ``temporal_span_mask_prob == 0``.
-
-        As with ``sample_subtree_joint_mask_train``, a draw that selects no span
-        returns an all-False mask rather than ``None``, so ``y``'s key set --
-        and therefore the compiled graph -- stays identical across steps. It
-        also keeps the sampler sync-free: no ``.any()`` readback per step.
-
-        Full-clip spans are not supported: the sampled span always leaves at
-        least one frame at the start or end unmasked so seam detection never
-        triggers on a clip-span boundary.  ``temporal_span_mask_max_frames``
-        is therefore capped at ``min(config_max, nframes - 1)`` at runtime.
-        Every real joint in the sample shares the same masked frames, while
-        padded joints stay False throughout.
-
-        A k-tiled loop window (``y['loop_tile_count']``, from the loader's
-        ``_tile_loop_motion``) is k copies of one cycle, so one span drawn
-        anywhere in it has a clean twin one period away and the model could
-        fill it by copying. For those samples the span is drawn within one
-        period and repeated at every period -- the same phase is re-drawn in
-        every copy -- and capped at ``period - 1`` so each cycle keeps an
-        unmasked frame. An untiled window has ``period == nframes`` and gets
-        the single contiguous span as before.
-        """
-        if (not self.training) or self.temporal_span_mask_prob <= 0.0:
-            return None
-
-        # Prefer the device copy: building the mask on the device from the host
-        # counts would be a blocking upload every step.
-        n_joints_batch = y.get('n_joints', y.get('n_joints_cpu'))
-        if n_joints_batch is None:
-            return None
-
-        # Fully vectorized, on-device sampling: no host<->device sync and no
-        # Python loop, so this stays compile/cudagraph friendly. Shapes are
-        # static across batches (frames resampled to nframes, joints padded to
-        # njoints). Randomness uses torch RNG, which is checkpointed alongside
-        # the numpy RNG state, so resume reproducibility is preserved (the
-        # exact sample sequence differs from the previous numpy path).
-        n_joints_t = torch.as_tensor(n_joints_batch, device=device, dtype=torch.long).reshape(-1)
-        batch_size = n_joints_t.shape[0]
-        if batch_size == 0 or nframes <= 0:
-            return None
-
-        min_span = min(self.temporal_span_mask_min_frames, nframes)
-        max_span = max(min_span, min(self.temporal_span_mask_max_frames, nframes - 1))
-
-        valid_joints = n_joints_t.clamp(min=0, max=njoints)                       # [B]
-        active = (torch.rand(batch_size, device=device) < self.temporal_span_mask_prob) \
-            & (valid_joints > 0)                                                  # [B]
-        # Period of the window's content in frames: nframes / tile count. Float
-        # on purpose -- a tile count that does not divide nframes makes copies
-        # that are interpolated rather than bit-identical, and the mask must
-        # still land on the same phase of each one.
-        tile_count = y.get('loop_tile_count')
-        if tile_count is None:
-            period = torch.full((batch_size,), float(nframes), device=device)
-        else:
-            tile_count = torch.as_tensor(tile_count, device=device).reshape(-1)
-            period = float(nframes) / tile_count.clamp(min=1).to(torch.float32)  # [B]
-        # Per-sample span range: the configured one, capped so each period
-        # keeps at least one unmasked frame (period - 1, which for an untiled
-        # window is the nframes - 1 cap above).
-        span_hi = torch.minimum(
-            torch.full_like(period, float(max_span)), period.floor() - 1.0
-        ).clamp(min=1.0)                                                          # [B]
-        span_lo = torch.minimum(torch.full_like(period, float(min_span)), span_hi)  # [B]
-        # randint(lo, hi + 1) per sample: scale [0,1) by (hi-lo+1) then floor,
-        # clamping guards the rare rand()==~1.0 rounding past hi.
-        span_length = (
-            span_lo + torch.rand(batch_size, device=device) * (span_hi - span_lo + 1.0)
-        ).floor()
-        span_length = torch.minimum(span_length, span_hi)                         # [B]
-        # Start inside the first period, so every repeat lies inside its own.
-        start_hi = (period - span_length).clamp(min=0.0).floor()                  # [B]
-        span_start = (torch.rand(batch_size, device=device) * (start_hi + 1.0)).floor()
-        span_start = torch.minimum(span_start, start_hi)                          # [B]
-
-        frame_idx = torch.arange(nframes, device=device, dtype=torch.float32)    # [T]
-        # Frame t is masked when its phase past the span start, taken modulo
-        # the period, falls inside the span. Frames before the start in the
-        # first period wrap to >= period - start >= span length: never masked.
-        phase = torch.remainder(frame_idx[None, :] - span_start[:, None], period[:, None])  # [B, T]
-        frame_mask = phase < span_length[:, None]                                # [B, T]
-        joint_idx = torch.arange(njoints, device=device)                         # [J]
-        joint_mask = joint_idx[None, :] < valid_joints[:, None]                   # [B, J]
-
-        mask = (
-            active[:, None, None]
-            & joint_mask[:, :, None]
-            & frame_mask[:, None, :]
-        )                                                                         # [B, J, T]
-        return mask
-
-    def sample_unreliable_mask_cond_drop_train(self, batch_size, device):
-        """Decide, per sample, whether to HIDE the training-time unreliable mask.
-
-        Returns a bool tensor of shape ``[B]`` (True = do not tell the model
-        which joints/frames were re-noised), or ``None`` when the feature is off
-        or we are not training.
-
-        The corruption itself is unaffected: the selected joints / frames still
-        get their independent-timestep re-noise, only the
-        ``y['cross_limb_unreliable_mask']`` handed to the forward is zeroed for
-        the dropped rows. Without this, the model only ever sees mixed
-        reliability together with a map of exactly where it is, and at inference
-        without a mask (plain generation, or repairing a motion whose damaged
-        joints are not known) it has never had to localize the damage itself.
-        Dropping the map on a fraction of steps trains that pathway too, in the
-        same way CFG dropout trains the unconditional branch.
-
-        Compile-safety: the returned row gate only zeroes an existing tensor, so
-        ``y``'s key set and every tensor shape are identical on every step;
-        the draw is one on-device ``rand`` with no host sync.
-        """
-        if (not self.training) or self.unreliable_mask_drop_prob <= 0.0:
-            return None
-        batch_size = int(batch_size)
-        if batch_size <= 0:
-            return None
-        return torch.rand(batch_size, device=device) < self.unreliable_mask_drop_prob
 
 
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
@@ -470,14 +207,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         bs, njoints, nfeats, nframes = x.shape
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
-        # joint-mask subtree perturbation is applied OUTSIDE this
-        # forward, in diffusion.training_losses, by re-noising the selected
-        # joints' x_t with q_sample(x_0, t_random, fresh_noise). The model
-        # itself stays vanilla -- selected joints DO NOT enter the
-        # key-padding masks and continue to participate in attention normally,
-        # just with mismatched noise levels, which trains the
-        # cross-joint pathway to denoise robustly against per-joint timestep
-        # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
@@ -519,15 +248,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         # Temporal self-attention is unmasked: every frame token attends over the
         # whole window.
 
-        # One (nframes, B, J) unreliable map, 1 == being re-drawn, shared by the
-        # input embedding below and every cross-limb block. Training loss and
-        # inference both hand over the (B, nframes, J) layout.
-        cross_limb_unreliable_mask = self._prepare_unreliable_mask(
-            y.get('cross_limb_unreliable_mask'), bs, nframes, njoints, x.device, x.dtype
-        )
-        if cross_limb_unreliable_mask is not None:
-            x = x + cross_limb_unreliable_mask.unsqueeze(-1) * self.unreliable_embedding
-
         # The decoder re-adds the same circular table (period T / k) per layer
         # on loop rows.
         output = self.seqTransDecoder(
@@ -538,7 +258,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
             spatial_mask=spatial_mask,
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
-            cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=is_loop,
             loop_cycles=loop_cycles,
             # Same token the additive path summed in above, so a CFG-dropped row
@@ -562,7 +281,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
     def __init__(self, input_feats, latent_dim, t5_output_dim,
-                 species_cond=False, species_film_bottleneck=128):
+                 species_cond=False):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -591,11 +310,10 @@ class InputProcess(nn.Module):
         #
         # The final linear is zero-initialized so the head starts at identity
         # (gamma=1, beta=0).
-        species_hidden = species_film_bottleneck or self.latent_dim
         self.species_film_j = nn.Sequential(
-            nn.Linear(t5_output_dim + species_code_dim(t5_output_dim), species_hidden),
+            nn.Linear(t5_output_dim + species_code_dim(t5_output_dim), self.latent_dim),
             nn.GELU(),
-            nn.Linear(species_hidden, 2 * t5_output_dim),
+            nn.Linear(self.latent_dim, 2 * t5_output_dim),
         ) if species_cond else None
         if self.species_film_j is not None:
             nn.init.zeros_(self.species_film_j[-1].weight)

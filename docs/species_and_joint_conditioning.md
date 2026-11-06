@@ -137,14 +137,14 @@ name_vec  = text_embedding( modulated )                                  # Linea
 
 - **concat 而非求和**：每个关节的 gamma / beta 是 `species × joint` 交互的函数。名字投影是一个没有非线性的 `Linear`，若改成 `joint + W(species)` 相加，结果恒等于 `E·joint + 一个只依赖物种的常量`——对所有关节完全相同，零关节分化。concat 之下，纯加性行为仍可由 `gamma_residual = 0, beta = W(s)` 平凡表示。
 - **MLP 吃"逐元素 dropout 之前"的名字，调制作用在"dropout 之后"的名字上**：逐元素 dropout 训练时置零并按 1/(1−p) 缩放、推理时不作用；若让 MLP 吃它的输出，gamma / beta 本身就会产生 train / eval 分布错位。整关节 drop 则**必须**对 MLP 可见，否则 FiLM 会把刚被隐藏的名字原样还给模型。
-- **隐层宽度** `--species_film_bottleneck`（默认 128，`train_all.bat` 为 64；0 表示取 `latent_dim`）：描述符的不同取值远少于物种数，宽隐层只是浪费。
+- **隐层宽度**固定为 `latent_dim`。
 - **零初始化**：输出层权重与偏置为零，起点是 identity（gamma = 1, beta = 0）；模型只需学"偏离"。
 - MLP 在 fp32 下运行（`run_in_fp32`）。
 
 ### 4.2 激活规则
 
 启用 `--species_cond` 时，species FiLM 在所有训练和推理行上开启，没有自己的 CFG drop 或 null 模式。
-推理的 `--species_tags` 可覆盖描述符，包括 img2img、inpaint 与 outpaint 编辑。
+推理的 `--species_tags` 可覆盖描述符，包括 img2img 编辑。
 
 ### 4.3 species 通路的作用边界
 

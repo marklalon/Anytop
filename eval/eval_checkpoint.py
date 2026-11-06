@@ -4,8 +4,7 @@ Checkpoint evaluation harness
 =============================
 
 Given a single checkpoint path, run a battery of generation tasks (plain
-generation, energy-conditioned loops, convert-to-loop, frame/joint inpainting
-and outpaint), score every generated clip with
+generation, energy-conditioned loops and convert-to-loop), score every generated clip with
 the motion quality evaluator, and write a portable HTML motion review report.
 
 Generation tasks call ``sample.generate`` in-process with shared model weights.
@@ -461,7 +460,7 @@ def _task_score_label(extra_args: list, eval_label: str | None) -> str:
     A task that generates with ``--action_label`` is scored with that label. A
     task that generates without one (unconditional, or conditioned only by a
     reference motion) must say what its clips are in ``eval_label`` -- the
-    action of the reference clip, e.g. ``"run"`` for a run-loop inpaint. Both
+    action of the reference clip, e.g. ``"run"`` for a run-loop reference. Both
     at once is a contradiction and neither is an error: there is no default
     prior, because a wrong prior scores confidently and silently. The label is
     parsed under the generate.py contract so a typo fails here, not mid-run.

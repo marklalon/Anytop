@@ -75,7 +75,7 @@ def _make_batch_item(
         'is_loop': is_loop,
         'resample_speed_cond': resample_speed_cond,
     }
-    extra_cond = {'joint_mask_limb_roots': np.zeros((n_joints,), dtype=np.bool_)}
+    extra_cond = {}
     return (
         motion,
         n_frames,
@@ -400,8 +400,6 @@ class NativeLoopTests(unittest.TestCase):
             lambda_loop_wrap = 0.75
             lambda_root_dpos = 0.17
             lambda_root_acc = 0.23
-            temporal_span_seam_loss_weight = 0.0
-            temporal_span_seam_width = 2
 
         diffusion = create_gaussian_diffusion(Args())
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)

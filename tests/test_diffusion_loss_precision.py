@@ -17,12 +17,11 @@ sys.path.insert(0, str(REPO_ROOT))
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
-from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_STAT_LEN, REST_LENGTH_SCALE_FLOOR  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_STAT_LEN, MODEL_CHANNELS, REST_LENGTH_SCALE_FLOOR  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
 from model.motion_diffusion import MotionDiffusion  # noqa: E402
-from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
 
@@ -52,32 +51,12 @@ class _BFloat16Model(nn.Module):
 class _RecordingModel(nn.Module):
     def __init__(
         self,
-        subtree_mask: torch.Tensor | None = None,
-        temporal_span_mask: torch.Tensor | None = None,
-        cond_drop_mask: torch.Tensor | None = None,
         output_mode: str = "identity",
     ):
         super().__init__()
-        self.subtree_mask = subtree_mask
-        self.temporal_span_mask = temporal_span_mask
-        self.cond_drop_mask = cond_drop_mask
         self.output_mode = output_mode
         self.last_x = None
 
-    def sample_subtree_joint_mask_train(self, y, njoints, device):
-        if self.subtree_mask is None:
-            return None
-        return self.subtree_mask.to(device=device)
-
-    def sample_temporal_span_mask_train(self, y, njoints, nframes, device):
-        if self.temporal_span_mask is None:
-            return None
-        return self.temporal_span_mask.to(device=device)
-
-    def sample_unreliable_mask_cond_drop_train(self, batch_size, device):
-        if self.cond_drop_mask is None:
-            return None
-        return self.cond_drop_mask.to(device=device)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, **model_kwargs) -> torch.Tensor:
         self.last_x = x.detach().clone()
@@ -315,9 +294,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         lambda_root_dpos: float = 0.0,
         lambda_root_acc: float = 0.0,
         lambda_bone: float = 0.0,
-        temporal_span_seam_loss_weight: float = 0.0,
-        temporal_span_seam_width: int = 0,
-        renoise_same_level_prob: float = 1.0,
     ) -> GaussianDiffusion:
         return GaussianDiffusion(
             betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
@@ -331,9 +307,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             lambda_root_dpos=lambda_root_dpos,
             lambda_root_acc=lambda_root_acc,
             lambda_bone=lambda_bone,
-            temporal_span_seam_loss_weight=temporal_span_seam_loss_weight,
-            temporal_span_seam_width=temporal_span_seam_width,
-            renoise_same_level_prob=renoise_same_level_prob,
         )
 
     def _make_spaced_diffusion(self, *, model_var_type: ModelVarType) -> SpacedDiffusion:
@@ -362,6 +335,22 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
                 "canonical_dpos_std": torch.ones(batch_size, dtype=torch.float32),
             }
         }
+
+    def test_training_uses_uniform_timestep_noise_and_supervises_all_model_channels(self):
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        model = _RecordingModel(output_mode="zero")
+        x_start = torch.randn(2, 3, 12, 5)
+        noise = torch.randn_like(x_start)
+        t = torch.tensor([0, 2])
+        kwargs = self._make_model_kwargs(2, 3, 12, 5)
+        original_keys = set(kwargs["y"])
+
+        terms = diffusion.training_losses(model, x_start, t, model_kwargs=kwargs, noise=noise)
+
+        self.assertTrue(torch.equal(model.last_x, diffusion.q_sample(x_start, t, noise=noise)))
+        expected = x_start[:, :, MODEL_CHANNELS, :].square().mean(dim=(1, 2, 3))
+        self.assertTrue(torch.allclose(terms["loss"], expected))
+        self.assertEqual(set(kwargs["y"]), original_keys)
 
     def test_training_losses_force_fp32_for_main_loss_terms(self):
         batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 5
@@ -495,417 +484,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(terms["l_simple"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
 
-    def test_training_losses_renoises_selected_joints_without_touching_others(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        subtree_mask = torch.tensor([[False, True, False]], dtype=torch.bool)
-        model = _RecordingModel(subtree_mask=subtree_mask)
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        t = torch.tensor([1], dtype=torch.int64)
-        t_random = torch.tensor([2], dtype=torch.int64)
-        base_noise = torch.full_like(x_start, 0.5)
-        fresh_noise = torch.full_like(x_start, -0.25)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
-        expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
-
-        with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random), \
-             patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
-            diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
-
-        self.assertIsNotNone(model.last_x)
-        self.assertTrue(torch.allclose(model.last_x[:, 0], expected_x_t[:, 0]))
-        self.assertTrue(torch.allclose(model.last_x[:, 2], expected_x_t[:, 2]))
-        self.assertTrue(torch.allclose(model.last_x[:, 1], expected_masked[:, 1]))
-        expected_unreliable = subtree_mask[:, None, :].float().expand(-1, n_frames, -1)
-        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
-        self.assertTrue(torch.equal(model_kwargs["y"]["cross_limb_unreliable_mask"], expected_unreliable))
-
-    def test_training_losses_renoises_selected_temporal_spans_without_touching_other_frames(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        temporal_span_mask = torch.tensor(
-            [[[False, True, True, False],
-              [False, True, True, False],
-              [False, True, True, False]]],
-            dtype=torch.bool,
-        )
-        model = _RecordingModel(temporal_span_mask=temporal_span_mask)
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        t = torch.tensor([1], dtype=torch.int64)
-        t_random = torch.tensor([2], dtype=torch.int64)
-        base_noise = torch.full_like(x_start, 0.5)
-        fresh_noise = torch.full_like(x_start, -0.25)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
-        expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
-
-        with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random), \
-             patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
-            diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
-
-        self.assertIsNotNone(model.last_x)
-        self.assertTrue(torch.allclose(model.last_x[..., 0], expected_x_t[..., 0]))
-        self.assertTrue(torch.allclose(model.last_x[..., 3], expected_x_t[..., 3]))
-        self.assertTrue(torch.allclose(model.last_x[..., 1], expected_masked[..., 1]))
-        self.assertTrue(torch.allclose(model.last_x[..., 2], expected_masked[..., 2]))
-        expected_unreliable = temporal_span_mask.permute(0, 2, 1).float().contiguous()
-        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
-        self.assertTrue(torch.equal(model_kwargs["y"]["cross_limb_unreliable_mask"], expected_unreliable))
-
-    def test_training_losses_unions_joint_and_temporal_masks_into_time_varying_unreliable(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        subtree_mask = torch.tensor([[False, True, False]], dtype=torch.bool)
-        temporal_span_mask = torch.tensor(
-            [[[False, False, True, True],
-              [False, False, True, True],
-              [False, False, True, True]]],
-            dtype=torch.bool,
-        )
-        model = _RecordingModel(
-            subtree_mask=subtree_mask,
-            temporal_span_mask=temporal_span_mask,
-        )
-        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
-        t = torch.tensor([1], dtype=torch.int64)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
-
-        expected_unreliable = torch.tensor(
-            [[[0.0, 1.0, 0.0],
-              [0.0, 1.0, 0.0],
-              [1.0, 1.0, 1.0],
-              [1.0, 1.0, 1.0]]],
-            dtype=torch.float32,
-        )
-        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
-        self.assertTrue(torch.equal(model_kwargs["y"]["cross_limb_unreliable_mask"], expected_unreliable))
-
-    def test_training_losses_adds_temporal_span_seam_loss(self):
-        # Seam loss is now a target-relative acceleration penalty on the
-        # position channel (features 0:3), restricted to the seam band.
-        batch_size, n_joints, n_feats, n_frames = 1, 1, 3, 6
-        diffusion = self._make_diffusion(
-            model_var_type=ModelVarType.FIXED_LARGE,
-            temporal_span_seam_loss_weight=0.75,
-            temporal_span_seam_width=1,
-        )
-        temporal_span_mask = torch.tensor(
-            [[[False, False, True, True, False, False]]],
-            dtype=torch.bool,
-        )
-        model = _RecordingModel(
-            temporal_span_mask=temporal_span_mask,
-            output_mode="zero",
-        )
-        # Position profile per frame (broadcast across the 3 position channels):
-        # [0, 0, 1, 1, 0, 0]. With a zero prediction, the canonical residual
-        # acceleration at interior frames 1..4 is 1 everywhere. The seam loss is
-        # measured in PHYSICAL space, so the position channel is first decoded:
-        # physical = std_pos * L * canonical (+ rest/mean, which cancel under the
-        # acceleration). The model_kwargs stats are identity, so std_pos == 1, and
-        # the single-joint rest pose is degenerate, so L is the floor: the decoded
-        # acceleration is REST_LENGTH_SCALE_FLOOR and the seam-band weighted mean
-        # squared acceleration error is its square.
-        expected_seam = REST_LENGTH_SCALE_FLOOR ** 2
-        x_start = torch.zeros(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
-        x_start[:, :, 0:3, 2:4] = 1.0
-        t = torch.tensor([1], dtype=torch.int64)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        terms = diffusion.training_losses(
-            model,
-            x_start,
-            t,
-            model_kwargs=model_kwargs,
-            noise=torch.zeros_like(x_start),
-        )
-
-        self.assertIn("temporal_span_seam_loss", terms)
-        self.assertAlmostEqual(float(terms["temporal_span_seam_loss"].item()), expected_seam, places=5)
-        self.assertAlmostEqual(
-            float(terms["loss"].item()),
-            float(terms["l_simple"].item()) + 0.75 * expected_seam,
-            places=5,
-        )
-
-    def test_build_temporal_span_seam_weights_peaks_at_boundaries(self):
-        diffusion = self._make_diffusion(
-            model_var_type=ModelVarType.FIXED_LARGE,
-            temporal_span_seam_width=2,
-        )
-        temporal_span_mask = torch.zeros((1, 1, 50), dtype=torch.bool)
-        temporal_span_mask[..., 31:40] = True
-
-        seam_weights = diffusion._build_temporal_span_seam_weights(
-            temporal_span_mask,
-        )
-
-        self.assertIsNotNone(seam_weights)
-        weights = seam_weights[0, 0, 0]
-        self.assertAlmostEqual(float(weights[31].item()), 1.0, places=5)
-        self.assertAlmostEqual(float(weights[39].item()), 1.0, places=5)
-        self.assertAlmostEqual(float(weights[29].item()), float(np.exp(-2.0)), places=5)
-        self.assertAlmostEqual(float(weights[30].item()), float(np.exp(-0.5)), places=5)
-        self.assertAlmostEqual(float(weights[32].item()), float(np.exp(-0.5)), places=5)
-        self.assertAlmostEqual(float(weights[33].item()), float(np.exp(-2.0)), places=5)
-        self.assertEqual(float(weights[34].item()), 0.0)
-        self.assertEqual(float(weights[35].item()), 0.0)
-        self.assertEqual(float(weights[36].item()), 0.0)
-        self.assertAlmostEqual(float(weights[37].item()), float(np.exp(-2.0)), places=5)
-        self.assertAlmostEqual(float(weights[38].item()), float(np.exp(-0.5)), places=5)
-        self.assertAlmostEqual(float(weights[40].item()), float(np.exp(-0.5)), places=5)
-        self.assertAlmostEqual(float(weights[41].item()), float(np.exp(-2.0)), places=5)
-
-    def test_build_temporal_span_seam_weights_matches_per_boundary_reference(self):
-        # The batched windowed max must reproduce, bit for bit, the per-sample,
-        # per-boundary construction it replaced: multiple spans, spans touching
-        # either edge, one-frame spans, empty samples, and several widths.
-        def reference(mask_bt, band):
-            batch_size, n_frames = mask_bt.shape
-            out = torch.zeros((batch_size, 1, 1, n_frames), dtype=torch.float32)
-            sigma = max(float(band) / 2.0, 1e-6)
-            for b in range(batch_size):
-                m = mask_bt[b]
-                if not bool(m.any()):
-                    continue
-                prev = torch.zeros_like(m)
-                prev[1:] = m[:-1]
-                nxt = torch.zeros_like(m)
-                nxt[:-1] = m[1:]
-                boundaries = torch.cat([
-                    torch.nonzero(m & ~prev).flatten(), torch.nonzero(m & ~nxt).flatten(),
-                ])
-                for boundary in boundaries.tolist():
-                    left, right = max(0, boundary - band), min(n_frames, boundary + band + 1)
-                    idx = torch.arange(left, right)
-                    w = torch.exp(-0.5 * ((idx.float() - float(boundary)) / sigma) ** 2)
-                    out[b, 0, 0, left:right] = torch.maximum(out[b, 0, 0, left:right], w)
-            return out
-
-        generator = torch.Generator().manual_seed(7)
-        n_frames = 30
-        for band in (1, 2, 3, 5):
-            diffusion = self._make_diffusion(
-                model_var_type=ModelVarType.FIXED_LARGE,
-                temporal_span_seam_width=band,
-            )
-            mask = torch.rand((12, 4, n_frames), generator=generator) < 0.35
-            mask[0] = False                                   # empty sample
-            mask[1] = False
-            mask[1, :, 0:5] = True                            # touches the start
-            mask[2] = False
-            mask[2, :, n_frames - 3:] = True                  # touches the end
-            mask[3] = False
-            mask[3, :, 10] = True                             # one-frame span
-            mask[4] = False
-            mask[4, :, 4:8] = True
-            mask[4, :, 9:14] = True                           # spans closer than 2*band
-            got = diffusion._build_temporal_span_seam_weights(mask)
-            expected = reference(mask.any(dim=1), band)
-            self.assertTrue(torch.equal(got, expected), f"band={band}")
-
-        all_empty = diffusion._build_temporal_span_seam_weights(torch.zeros((3, 2, n_frames), dtype=torch.bool))
-        self.assertTrue(torch.equal(all_empty, torch.zeros((3, 1, 1, n_frames))))
-
-    def test_create_gaussian_diffusion_keeps_temporal_span_seam_width(self):
-        class _Args:
-            diffusion_steps = 3
-            timestep_respacing = ""
-            noise_schedule = "cosine"
-            sigma_small = True
-            lambda_geo = 0.0
-            temporal_span_seam_loss_weight = 0.75
-            temporal_span_seam_width = 2
-
-        diffusion = create_gaussian_diffusion(_Args())
-
-        self.assertEqual(diffusion.temporal_span_seam_loss_weight, 0.75)
-        self.assertEqual(diffusion.temporal_span_seam_width, 2)
-
-    def test_training_losses_clears_stale_cross_limb_unreliable_mask_when_no_mask_is_sampled(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        model = _RecordingModel(subtree_mask=None)
-        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
-        t = torch.tensor([1], dtype=torch.int64)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-        model_kwargs["y"]["cross_limb_unreliable_mask"] = torch.ones(batch_size, n_frames, n_joints, dtype=torch.float32)
-
-        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
-
-        self.assertNotIn("cross_limb_unreliable_mask", model_kwargs["y"])
-
-    def test_training_losses_keeps_empty_cross_limb_unreliable_mask_key(self):
-        """An all-False mask still publishes the key, and re-noises nothing.
-
-        The samplers return an empty mask (not None) when the feature is on but
-        the draw selects nothing, so y's key set -- and the compiled graph --
-        stays the same on every training step.
-        """
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        empty_mask = torch.zeros((batch_size, n_joints), dtype=torch.bool)
-        model = _RecordingModel(subtree_mask=empty_mask)
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        t = torch.tensor([1], dtype=torch.int64)
-        base_noise = torch.full_like(x_start, 0.5)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
-
-        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
-
-        self.assertIsNotNone(model.last_x)
-        self.assertTrue(torch.allclose(model.last_x, expected_x_t))
-        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
-        unreliable = model_kwargs["y"]["cross_limb_unreliable_mask"]
-        self.assertEqual(unreliable.shape, (batch_size, n_frames, n_joints))
-        self.assertFalse(bool(unreliable.any()))
-
-    def test_sample_renoise_timesteps_never_draws_below_t(self):
-        """The hard branch may draw later timesteps, but never earlier ones."""
-        diffusion = self._make_diffusion(
-            model_var_type=ModelVarType.FIXED_LARGE,
-            renoise_same_level_prob=0.0,
-        )
-        t = torch.randint(0, diffusion.num_timesteps, (512,), dtype=torch.int64)
-
-        torch.manual_seed(0)
-        t_random = diffusion._sample_renoise_timesteps(t, torch.device("cpu"))
-
-        self.assertEqual(t_random.shape, t.shape)
-        self.assertEqual(t_random.dtype, t.dtype)
-        self.assertTrue(bool((t_random >= t).all()))
-        self.assertTrue(bool((t_random < diffusion.num_timesteps).all()))
-        # It must still actually degrade something, not collapse onto t.
-        self.assertTrue(bool((t_random > t).any()))
-
-    def test_sample_renoise_timesteps_degenerates_at_the_last_step(self):
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        last = diffusion.num_timesteps - 1
-        t = torch.full((64,), last, dtype=torch.int64)
-
-        torch.manual_seed(0)
-        t_random = diffusion._sample_renoise_timesteps(t, torch.device("cpu"))
-
-        self.assertTrue(bool((t_random == last).all()))
-
-    def test_training_losses_cond_drop_hides_the_mask_but_keeps_the_renoise(self):
-        """A dropped row is re-noised exactly the same, it is just not announced.
-
-        That is the whole point of the drop: the model still has to denoise
-        mixed-reliability input, without being handed the map of where the
-        damage is.
-        """
-        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        subtree_mask = torch.tensor(
-            [[False, True, False], [False, True, True]], dtype=torch.bool
-        )
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        t = torch.tensor([1, 1], dtype=torch.int64)
-        t_random = torch.tensor([2, 2], dtype=torch.int64)
-        base_noise = torch.full_like(x_start, 0.5)
-        fresh_noise = torch.full_like(x_start, -0.25)
-
-        def _run(cond_drop_mask):
-            model = _RecordingModel(subtree_mask=subtree_mask, cond_drop_mask=cond_drop_mask)
-            model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-            with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random),                  patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
-                diffusion.training_losses(
-                    model, x_start, t, model_kwargs=model_kwargs, noise=base_noise
-                )
-            return model.last_x, model_kwargs["y"]["cross_limb_unreliable_mask"]
-
-        kept_x, kept_mask = _run(None)
-        dropped_x, dropped_mask = _run(torch.tensor([True, False], dtype=torch.bool))
-
-        # Same corrupted input either way.
-        self.assertTrue(torch.equal(kept_x, dropped_x))
-
-        # Only the dropped row of the published mask is zeroed.
-        self.assertEqual(dropped_mask.shape, kept_mask.shape)
-        self.assertEqual(dropped_mask.dtype, kept_mask.dtype)
-        self.assertFalse(bool(dropped_mask[0].any()))
-        self.assertTrue(bool(kept_mask[0].any()))
-        self.assertTrue(torch.equal(dropped_mask[1], kept_mask[1]))
-
-    def test_training_losses_cond_drop_of_every_row_keeps_the_key(self):
-        """An all-dropped batch publishes an all-False mask, never a missing key.
-
-        Dropping the key instead would change y's key set from step to step and
-        force torch.compile to recompile the forward.
-        """
-        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        subtree_mask = torch.ones((batch_size, n_joints), dtype=torch.bool)
-        model = _RecordingModel(
-            subtree_mask=subtree_mask,
-            cond_drop_mask=torch.ones(batch_size, dtype=torch.bool),
-        )
-        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
-        t = torch.tensor([1, 1], dtype=torch.int64)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
-
-        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
-        unreliable = model_kwargs["y"]["cross_limb_unreliable_mask"]
-        self.assertEqual(unreliable.shape, (batch_size, n_frames, n_joints))
-        self.assertFalse(bool(unreliable.any()))
-
-    def test_training_losses_rejects_wrong_shaped_cond_drop_mask(self):
-        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        model = _RecordingModel(
-            subtree_mask=torch.ones((batch_size, n_joints), dtype=torch.bool),
-            cond_drop_mask=torch.ones(batch_size + 1, dtype=torch.bool),
-        )
-        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
-        t = torch.tensor([1, 1], dtype=torch.int64)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        with self.assertRaises(ValueError):
-            diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
-
-    def test_spaced_diffusion_training_losses_unwraps_model_for_joint_mask_perturbation(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
-        diffusion = self._make_spaced_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        subtree_mask = torch.tensor([[False, True, False]], dtype=torch.bool)
-        model = _RecordingModel(subtree_mask=subtree_mask)
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        t = torch.tensor([1], dtype=torch.int64)
-        t_random = torch.tensor([2], dtype=torch.int64)
-        base_noise = torch.full_like(x_start, 0.5)
-        fresh_noise = torch.full_like(x_start, -0.25)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
-        expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
-
-        with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random), \
-             patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
-            diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
-
-        self.assertIsNotNone(model.last_x)
-        self.assertTrue(torch.allclose(model.last_x[:, 0], expected_x_t[:, 0]))
-        self.assertTrue(torch.allclose(model.last_x[:, 2], expected_x_t[:, 2]))
-        self.assertTrue(torch.allclose(model.last_x[:, 1], expected_masked[:, 1]))
 
     def test_anytop_forward_keeps_joint_key_padding_mask_padding_only(self):
         model = MotionDiffusion(
@@ -917,7 +495,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_heads=2,
             dropout=0.0,
             cross_limb=True,
-            joint_mask_prob=1.0,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -934,7 +511,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
             "canonical_feature_std": torch.ones(12, dtype=torch.float32),
             "parents": torch.tensor([[-1, 0, 1, 2]], dtype=torch.int64),
-            "joint_mask_limb_roots": torch.tensor([[False, True, True, True]], dtype=torch.bool),
         }
 
         model(x, torch.tensor([1], dtype=torch.int64), y=y)
@@ -1017,290 +593,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
         self.assertEqual(out.shape, x.shape)
         self.assertTrue(torch.isfinite(out).all())
-
-    def test_anytop_forward_normalizes_cross_limb_unreliable_mask_without_mutating_input(self):
-        model = MotionDiffusion(
-            max_joints=4,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=True,
-        )
-        capture_decoder = _CaptureDecoder()
-        model.seqTransDecoder = capture_decoder
-        model.eval()
-
-        x = torch.randn(1, 4, 12, 3, dtype=torch.float32)
-        raw_unreliable = torch.tensor(
-            [[[0.0, 1.0, 0.0, 0.0],
-              [1.0, 0.0, 0.0, 0.0],
-              [0.0, 0.0, 1.0, 0.0]]],
-            dtype=torch.float32,
-        )
-        raw_copy = raw_unreliable.clone()
-        y = {
-            "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
-            "n_joints": torch.tensor([4], dtype=torch.int64),
-            "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
-            "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
-            # Unconditional model input -- every forward reads the output frame.
-            "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
-            "canonical_feature_std": torch.ones(12, dtype=torch.float32),
-            "cross_limb_unreliable_mask": raw_unreliable,
-        }
-
-        model(x, torch.tensor([1], dtype=torch.int64), y=y)
-
-        self.assertIsNotNone(capture_decoder.last_kwargs)
-        expected = raw_unreliable.transpose(0, 1).contiguous()
-        self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], expected))
-        self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], raw_copy))
-
-    def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
-        model = MotionDiffusion(
-            max_joints=9,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=False,
-            joint_mask_prob=1.0,
-        )
-        model.train()
-
-        parents = torch.tensor(
-            [
-                [-1, 0, 1, 2, 3, 0, 5, 0, 7],
-                [-1, 0, 1, 2, 0, 0, 0, 0, 0],
-            ],
-            dtype=torch.int64,
-        )
-        limb_root_mask = torch.tensor(
-            [
-                [False, True, False, False, False, True, False, True, False],
-                [False, True, False, False, True, False, False, False, False],
-            ],
-            dtype=torch.bool,
-        )
-        y = {
-            "n_joints": torch.tensor([9, 5], dtype=torch.int64),
-            "parents": parents,
-            "joint_mask_limb_roots": limb_root_mask,
-        }
-
-        np.random.seed(123)
-        batch_mask = model.sample_subtree_joint_mask_train(y, njoints=9, device=torch.device("cpu"))
-
-        np.random.seed(123)
-        expected = torch.zeros((2, 9), dtype=torch.bool)
-        for batch_index, valid_joint_count in enumerate((9, 5)):
-            per_sample_mask = sample_subtree_joint_mask(
-                parents=parents[batch_index, :valid_joint_count].tolist(),
-                limb_root_mask=limb_root_mask[batch_index, :valid_joint_count].numpy(),
-                rng=np.random,
-            )
-            if per_sample_mask is not None:
-                expected[batch_index, :valid_joint_count] = torch.from_numpy(per_sample_mask)
-
-        self.assertIsNotNone(batch_mask)
-        self.assertTrue(torch.equal(batch_mask.cpu(), expected))
-
-    def test_anytop_sample_temporal_span_mask_train_marks_contiguous_valid_joint_spans(self):
-        model = MotionDiffusion(
-            max_joints=4,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=False,
-            temporal_span_mask_prob=1.0,
-            temporal_span_mask_min_frames=2,
-            temporal_span_mask_max_frames=2,
-        )
-        model.train()
-
-        y = {
-            "n_joints": torch.tensor([4, 2], dtype=torch.int64),
-        }
-
-        np.random.seed(123)
-        temporal_mask = model.sample_temporal_span_mask_train(
-            y,
-            njoints=4,
-            nframes=5,
-            device=torch.device("cpu"),
-        )
-
-        self.assertIsNotNone(temporal_mask)
-        self.assertEqual(temporal_mask.shape, (2, 4, 5))
-        self.assertEqual(temporal_mask.dtype, torch.bool)
-
-        for sample_index, valid_joints in enumerate((4, 2)):
-            sample_mask = temporal_mask[sample_index]
-            self.assertFalse(sample_mask[valid_joints:, :].any())
-            self.assertTrue(torch.equal(sample_mask[:valid_joints], sample_mask[0:1].expand(valid_joints, -1)))
-            frame_indices = torch.nonzero(sample_mask[0], as_tuple=False).flatten()
-            self.assertEqual(len(frame_indices), 2)
-            self.assertEqual(int(frame_indices[-1] - frame_indices[0]), 1)
-
-    def test_anytop_sample_temporal_span_mask_train_repeats_span_at_every_tile_period(self):
-        """A k-tiled loop window gets the same span in every one of its k copies.
-
-        Otherwise the re-noised span has a clean twin one period away and the
-        model can fill it by copying. Each period keeps at least one unmasked
-        frame, and an untiled window (tile count 1) is the single span it was.
-        """
-        model = MotionDiffusion(
-            max_joints=3,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=False,
-            temporal_span_mask_prob=1.0,
-            temporal_span_mask_min_frames=2,
-            temporal_span_mask_max_frames=2,
-        )
-        model.train()
-        nframes = 12
-        tile_counts = (3, 1, 2, 6)
-        y = {
-            "n_joints": torch.tensor([3, 3, 2, 3], dtype=torch.int64),
-            "loop_tile_count": torch.tensor(tile_counts, dtype=torch.int64),
-        }
-
-        torch.manual_seed(5)
-        for _ in range(50):
-            temporal_mask = model.sample_temporal_span_mask_train(
-                y, njoints=3, nframes=nframes, device=torch.device("cpu")
-            )
-            self.assertEqual(temporal_mask.shape, (4, 3, nframes))
-            for sample_index, tile_count in enumerate(tile_counts):
-                frames = temporal_mask[sample_index, 0]
-                period = nframes // tile_count
-                # tile 6 has a 2-frame period: the span is capped to 1 frame so
-                # the period keeps an unmasked one; the others take the full 2.
-                span = min(2, period - 1)
-                cycles = frames.view(tile_count, period)
-                # Same phase in every copy ...
-                self.assertTrue(torch.equal(cycles, cycles[0:1].expand(tile_count, -1)), frames)
-                # ... one contiguous span of the expected length per copy ...
-                masked = torch.nonzero(cycles[0], as_tuple=False).flatten()
-                self.assertEqual(len(masked), span, frames)
-                self.assertEqual(int(masked[-1] - masked[0]), span - 1, frames)
-                # ... and an unmasked frame left in every period.
-                self.assertLess(int(cycles[0].sum()), period)
-            # Padded joints stay clear, real joints share the frames.
-            self.assertFalse(temporal_mask[2, 2].any())
-            self.assertTrue(torch.equal(temporal_mask[2, 0], temporal_mask[2, 1]))
-
-    def _empty_draw_model(self, **mask_kwargs):
-        model = MotionDiffusion(
-            max_joints=4,
-            feature_len=12,
-            latent_dim=8,
-            ff_size=32,
-            num_layers=1,
-            num_heads=2,
-            dropout=0.0,
-            cross_limb=False,
-            **mask_kwargs,
-        )
-        model.train()
-        return model
-
-    def test_anytop_mask_samplers_return_empty_mask_instead_of_none_when_enabled(self):
-        """An enabled sampler that draws nothing must still return a mask.
-
-        Returning None would drop y['cross_limb_unreliable_mask'] for that step,
-        and a key set that varies between steps makes torch.compile recompile
-        the forward the first time an empty batch comes up.
-        """
-        y = {
-            "n_joints": torch.tensor([4, 2], dtype=torch.int64),
-            "parents": torch.tensor(
-                [[-1, 0, 1, 2], [-1, 0, 0, 0]], dtype=torch.int64
-            ),
-        }
-        device = torch.device("cpu")
-
-        # A positive but vanishing probability: the feature is on, yet no draw
-        # selects anything.
-        joint_model = self._empty_draw_model(joint_mask_prob=1e-12)
-        np.random.seed(0)
-        subtree_mask = joint_model.sample_subtree_joint_mask_train(y, njoints=4, device=device)
-
-        self.assertIsNotNone(subtree_mask)
-        self.assertEqual(subtree_mask.shape, (2, 4))
-        self.assertEqual(subtree_mask.dtype, torch.bool)
-        self.assertFalse(bool(subtree_mask.any()))
-
-        span_model = self._empty_draw_model(temporal_span_mask_prob=1e-12)
-        torch.manual_seed(0)
-        temporal_mask = span_model.sample_temporal_span_mask_train(
-            y, njoints=4, nframes=5, device=device
-        )
-
-        self.assertIsNotNone(temporal_mask)
-        self.assertEqual(temporal_mask.shape, (2, 4, 5))
-        self.assertEqual(temporal_mask.dtype, torch.bool)
-        self.assertFalse(bool(temporal_mask.any()))
-
-    def test_anytop_sample_unreliable_mask_cond_drop_train(self):
-        device = torch.device("cpu")
-
-        off = self._empty_draw_model(unreliable_mask_drop_prob=0.0)
-        self.assertIsNone(off.sample_unreliable_mask_cond_drop_train(4, device))
-
-        always = self._empty_draw_model(unreliable_mask_drop_prob=1.0)
-        drop = always.sample_unreliable_mask_cond_drop_train(4, device)
-        self.assertEqual(drop.shape, (4,))
-        self.assertEqual(drop.dtype, torch.bool)
-        self.assertTrue(bool(drop.all()))
-
-        never = self._empty_draw_model(unreliable_mask_drop_prob=1e-12)
-        torch.manual_seed(0)
-        self.assertFalse(bool(never.sample_unreliable_mask_cond_drop_train(4, device).any()))
-
-        always.eval()
-        self.assertIsNone(always.sample_unreliable_mask_cond_drop_train(4, device))
-
-        with self.assertRaises(ValueError):
-            self._empty_draw_model(unreliable_mask_drop_prob=1.5)
-
-    def test_anytop_mask_samplers_return_none_when_disabled_or_eval(self):
-        y = {
-            "n_joints": torch.tensor([4, 2], dtype=torch.int64),
-            "parents": torch.tensor(
-                [[-1, 0, 1, 2], [-1, 0, 0, 0]], dtype=torch.int64
-            ),
-        }
-        device = torch.device("cpu")
-
-        disabled = self._empty_draw_model(joint_mask_prob=0.0, temporal_span_mask_prob=0.0)
-        self.assertIsNone(disabled.sample_subtree_joint_mask_train(y, njoints=4, device=device))
-        self.assertIsNone(
-            disabled.sample_temporal_span_mask_train(y, njoints=4, nframes=5, device=device)
-        )
-
-        enabled = self._empty_draw_model(
-            joint_mask_prob=1.0, temporal_span_mask_prob=1.0
-        )
-        enabled.eval()
-        self.assertIsNone(enabled.sample_subtree_joint_mask_train(y, njoints=4, device=device))
-        self.assertIsNone(
-            enabled.sample_temporal_span_mask_train(y, njoints=4, nframes=5, device=device)
-        )
 
 
 if __name__ == "__main__":

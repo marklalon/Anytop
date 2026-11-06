@@ -1,6 +1,6 @@
 # AnyTop 模型架构
 
-本文档描述 AnyTop 的模型结构：输入特征、条件总线、decoder、训练扰动与损失，以及参考动作在
+本文档描述 AnyTop 的模型结构：输入特征、条件总线、decoder、扩散训练与损失，以及参考动作在
 采样侧的编辑使用方式。层数、宽度、各种概率和损失权重由训练配置决定；正文以结构与数据流为主，
 参考配置的参数预算见 §11。实现细节以代码为准。
 
@@ -32,12 +32,10 @@ diffusion timestep
   + action-label condition
 ```
 
-`--reference_motion` 仅用于编辑，必须搭配 `--skip_timesteps` / `--inpaint_*` / `--outpaint`。
+`--reference_motion` 仅用于编辑，必须搭配 `--skip_timesteps`。
 动作只在采样器侧用于：
 
 - `skip_timesteps` 的 img2img 初始化；
-- 每步 clamp 已知区域的 inpainting；
-- clamp 已有帧、生成新增帧的 outpainting。
 
 编辑在目标骨架上进行，参考必须是目标同一套骨架：已预处理的 `.npy`，或以文件自带 bind pose 为 rest pose 的 `.glb/.fbx`（骨架层级与目标不一致时报错），不做 retarget。
 
@@ -61,7 +59,6 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - per-joint species × joint FiLM（所有行开启）；
 - 按角色分槽的 action-label 条件与 action CFG；
 - resample-speed 条件（输出坐标/标准化空间全语料统一，不作为模型输入）；
-- subtree / temporal-span 混合噪声训练；
 - full temporal attention、QK-Norm 和细分的拓扑关系码。
 
 
@@ -163,14 +160,14 @@ variant 是正交码（每个 variant 一根轴，取值为该 body plan 行的�
 
 ```text
 [joint_name_emb || species_code]
-  → Linear(D_t5 + D_code, bottleneck) → GELU → Linear(bottleneck, 2 * D_t5)
+  → Linear(D_t5 + D_code, latent_dim) → GELU → Linear(latent_dim, 2 * D_t5)
   → gamma_residual, beta
 
 modulated_name = (1 + gamma_residual) * joint_name_emb + beta
   → text_embedding → latent width
 ```
 
-隐藏宽度由 `species_film_bottleneck` 控制，设为 0 时使用 `latent_dim`。
+隐藏宽度固定为 `latent_dim`。
 最后一层权重和偏置初始化为零，因此初始调制为 identity。
 
 FiLM 在所有行上开启，没有独立的 CFG drop 或 null 模式。
@@ -200,9 +197,7 @@ Action label 使用受控词表，不接收自由文本。每个词先查 checkp
 零初始化，驱动向量与加性路径共用，所以 CFG 的无条件分支自动走 null。
 设计细节见 [conditional_modulation_upgrade.md](conditional_modulation_upgrade.md) §3。
 
-`--action_adaln_bottleneck` 设这个头的隐层宽（0 表示使用 `latent_dim`）。它的输入是
-action token，而标签集的 slot-source 秩有限，头再宽也用不满，所以隐层可以远小于
-`latent_dim`，同时避免它成为模型里最大的单个矩阵。见 §11。
+这个头的隐藏宽度固定为 `latent_dim`。
 
 ### 4.3 输出空间与 resample speed
 
@@ -311,24 +306,14 @@ latent **没有自己的时间表**。每帧所有关节 token 都带着 InputPr
 完整的 block 顺序（`CrossLimbTemporalBlock.forward`）：
 
 ```text
-cross-in（per-joint reliability_bias 加在 logits 上）
-  → latent temporal self-attention（per-frame temporal_reliability_bias 作为 additive key bias）
+cross-in
+  → latent temporal self-attention
   → cross-K self-attention（同一帧的 K 个 latent 互相注意；Pre-Norm + 零初始化 cross_k_scale）
   → cross-out
 ```
 
-“哪些区域不可靠”这条信号分三层进入网络：
-
-- `MotionDiffusion.unreliable_embedding`：全局一个 `d_model` 向量，在 InputProcess 之后按
-  `unreliable_mask` 加到输入 token 上，整个 trunk（spatial/temporal attention、FFN，
-  以及 cross-limb 的 value/query）都能看到重绘区域；
-- cross-in 的标量 `reliability_bias`：做帧内的关节级选择；
-- latent temporal attention 的标量 `temporal_reliability_bias`：乘以“该帧被标记的有效关节
-  占比”作为 key bias，做帧级选择。只有 cross-in 的标量 bias 时，整帧被标记会被 softmax 的
-  平移不变性抵消，整帧 inpaint 和 temporal span 对这条路径等于不存在。
-
 cross-K attention 让同一帧的 K 个 latent 在 cross-out 之前直接交换信息，而不必绕
-“cross-out → 下一层 spatial attention → 下一层 cross-in”。这些标量都零初始化，
+“cross-out → 下一层 spatial attention → 下一层 cross-in”。`cross_k_scale` 零初始化，
 `cross_k_norm`/`cross_k_attn` 藏在零 gate 之后，训练起点等价于没有 cross-K。
 
 ## 6. Loop 路径
@@ -395,24 +380,11 @@ checkpoint 的窗口，超过窗口的高频 loop 按非 loop 计票，所以不
 
 loop 路径不使用 loop-aware temporal mask。
 
-## 7. 混合可靠性训练
+## 7. 扩散训练
 
-基础扩散先按统一 timestep 生成 `x_t`，随后可对局部区域用独立噪声重新加噪。重加噪的
-timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值时每个样本 `t_random = t`
-（同级、只换噪声），把“被标记”与“比周围脏得多”解绑——推理时被夹住的已知区和自由区都
-处于同一名义 timestep；降低该值会让一部分样本均匀取自 `[t, T)`，继续训练用可靠上下文修复
-严重局部损坏。两支都不早于 `t`。
+训练只使用统一 timestep 的标准扩散加噪 `q_sample(x_0, t)`，不做局部区域重加噪，也不提供可靠性掩码条件。
 
-- subtree joint perturbation：随机选择预算内的非根子树；
-- temporal-span perturbation：随机选择连续帧，并覆盖该样本的全部真实关节；对 k 份 tile 的 loop 窗口，
-  同一相位的 span 在每一份拷贝里都重画（`y['loop_tile_count']`），否则被重加噪的段在一个周期之外有干净副本可抄；
-- 两者可以取并集；
-- supervision target 不变，被扰动单元仍参与 loss 和 attention；
-- `cross_limb_unreliable_mask` 把位置告知整个 trunk（`unreliable_embedding`）和 cross-limb
-  的两个 reliability bias；
-- `unreliable_mask_drop_prob` 会在部分样本上隐藏这张图，让模型自行定位损坏区域。
-
-这是训练阶段的扰动策略，不引入额外分支。
+TODO：以后训练专门的 inpaint/outpaint 模型；motion diffusion 本身不再承载这些能力。
 
 ## 8. 损失
 
@@ -425,18 +397,15 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 | geodesic | 预测/目标 6D rotation 转 SO(3) 后的角距离 |
 | bone vector | 父→子骨向量相对 GT 的差（同时管长度和方向），按 rest 骨长归一化（下限为 L 的一个比例），按 `alphas_cumprod[t]` 加权；每个叶子关节另加一根局部坐标系下的单位虚拟子骨，方向各向同性（`‖R_pred − R_gt‖_F / √3`），让叶子的旋转和有子关节的关节一样受约束 |
 | loop wrap | loop 首尾 rotation 闭合 |
-| temporal-span seam | span 边界附近 position 二阶差分匹配 GT |
 
 ## 9. 参考动作与编辑
 
-编辑用法（带 `--skip_timesteps` / `--inpaint_*` / `--outpaint`）不把参考送入 decoder，参考必须与目标同物种，用途为：
+编辑用法（带 `--skip_timesteps`）不把参考送入 decoder，参考必须与目标同物种，用途为：
 
 - plain reference generation：参考动作作为 `init_image`，从 `skip_timesteps` 指定的噪声等级
   开始 img2img；
-- inpainting：被编辑区域自由生成，已知区域在每一步投影回相应噪声等级的 reference；
-- outpainting：已有帧 clamp，新增帧从纯噪声生成；需要时使用两阶段流程。
 
-因此这些编辑能力不增加 AnyTop forward 的参数量。
+整段参考动作仅作为扩散初始状态，不作为 decoder 条件。
 
 跨骨架参考动作迁移由 [motion autoencoder](motion_autoencoder.md) 承担。扩散模型不编码参考动作，动作标签、species FiLM 与 loop 周期条件始终遵循各自的常规规则。
 
@@ -444,9 +413,7 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性
 插值（`invert_resample_motion_features`），而不是再插值一次：插值会漏掉
 落在两个窗口帧之间的源帧，削平几帧周期的内容，反解对精确的窗口逐帧还原、对有噪声的窗口做平均。
-M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参考的 inpaint/outpaint 也保留线性插值：
-它的 mask 只放开每个输出帧插值所读的那两个窗口帧，而反解的每个输出帧都以衰减权重读整个窗口，
-会把重新生成的帧漏进被 clamp 的参考帧。
+M 大于窗口时插值不可逆，仍用线性插值。
 
 ## 10. 代码入口
 
@@ -455,17 +422,17 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | AnyTop 输入、条件与 forward | `model/motion_diffusion.py` |
 | graph/temporal/cross-limb attention | `model/motion_transformer.py` |
 | diffusion 构建与 `x_0` 目标 | `utils/model_util.py` |
-| 训练 perturbation 与损失 | `diffusion/gaussian_diffusion.py` |
+| 扩散训练与损失 | `diffusion/gaussian_diffusion.py` |
 | joint structural channel | `data_loaders/truebones/truebones_utils/joint_struct_features.py` |
 | refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
-| reference/inpainting/outpainting | `sample/generate.py` |
+| 参考动作 img2img | `sample/generate.py` |
 | 共享静态骨架几何 | `data_loaders/reference.py` |
 
 ## 11. 宽度分配与设计依据
 
 参数预算由训练配置（`train_all.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
-`last_layer_ff`、`action_adaln_bottleneck`、`species_film_bottleneck`。冻结的 T5 词表以 buffer 形式保存，
+`last_layer_ff`。action AdaLN 和 species FiLM 的隐藏宽度均固定为 `latent_dim`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
@@ -478,9 +445,6 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
   宽度没有余量，因此主干保持全宽。
 - **末层 FFN 坍缩**：末层 FFN 的单元增益远低于其它层，大量隐单元不参与。末层之后只有
   `LayerNorm → Linear` 的线性读出，不需要全宽 FFN，因此用 `last_layer_ff` 收窄。
-- **AdaLN 头的有效秩被标签集的秩封顶**：隐层不需要接近 `latent_dim`；窄隐层同时避免它成为
-  模型里最大的单个矩阵。
-- **species 描述子的秩远低于物种数**：per-joint FiLM 的隐层相应取窄。
 - **`action_label_projection` 只读紧凑通道**：direction 槽的正交码只占少数几个轴，其余列的输入
   恒为 0，是结构性死参数；投影只读 `compact_slot_channels`，不读完整槽宽。
 - **cross-limb**：proj 的有效秩接近瓶颈宽度，宽度用满。

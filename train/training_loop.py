@@ -90,17 +90,12 @@ def _fixed_validation_rng(device):
 
 # Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
 # suffix: the zero-init gates a residual or bias path is opened with
-# (cross-limb ``reliability_bias`` / ``temporal_reliability_bias`` /
-# ``cross_k_scale``, the decoder layer's
-# ``temporal_phase_scale``, the global ``unreliable_embedding``) plus the
+# (cross-limb ``cross_k_scale`` and decoder ``temporal_phase_scale``) plus the
 # cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
 # i.e. toward closing the path it was learned to open. A name rule, not
 # ``param.ndim == 1``: those scalars are ``torch.zeros(1)``, the same rank as
 # the LayerNorm affines that are NOT on this list.
 NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
-    'unreliable_embedding',
-    '.reliability_bias',
-    '.temporal_reliability_bias',
     '.cross_k_scale',
     '.cross_k_norm.weight',
     '.cross_k_norm.bias',
@@ -109,7 +104,7 @@ NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
 
 
 def is_no_weight_decay_param(name: str) -> bool:
-    return name == 'unreliable_embedding' or name.endswith(NO_WEIGHT_DECAY_PARAM_SUFFIXES)
+    return name.endswith(NO_WEIGHT_DECAY_PARAM_SUFFIXES)
 
 
 def build_optimizer_param_groups(named_params, weight_decay: float):
@@ -533,24 +528,15 @@ class TrainLoop:
         return batch.to(self.device, non_blocking=self.non_blocking)
 
 
-    # Read only by the host-side joint-mask sampler (MotionDiffusion.sample_subtree_joint_mask_train):
-    # moving it to the device just to read it back cost a stream sync per step.
-    HOST_ONLY_COND_KEYS = ('joint_mask_limb_roots',)
-
     # Loss terms that have no value under eval(); validation does not log them.
     TRAIN_ONLY_LOSS_KEYS = ('part_loss',)
 
     def _move_cond_to_device(self, cond):
         y = {
-            key: val if key in self.HOST_ONLY_COND_KEYS or not torch.is_tensor(val)
+            key: val if not torch.is_tensor(val)
             else val.to(self.device, non_blocking=self.non_blocking)
             for key, val in cond['y'].items()
         }
-        # The same sampler needs the joint counts on the host; keep the
-        # collate's copy next to the device one instead of reading it back.
-        n_joints = cond['y'].get('n_joints')
-        if torch.is_tensor(n_joints):
-            y['n_joints_cpu'] = n_joints
         return {'y': y}
 
     def _with_train_step(self, cond, train_step):

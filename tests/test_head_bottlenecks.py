@@ -1,10 +1,4 @@
-"""The three head-width knobs: ``--action_adaln_bottleneck``,
-``--species_film_bottleneck``, ``--last_layer_ff``.
-
-The species head defaults to 128; the other widths default to 0 (full width). The v24 values are
-pinned here with the shapes they produce, since the point of the change is a
-specific parameter budget (docs/anytop_model_architecture.md).
-"""
+"""Conditioning heads use latent_dim; last-layer FFN width stays configurable."""
 from __future__ import annotations
 
 import sys
@@ -34,8 +28,7 @@ def _args(**overrides):
     a = SimpleNamespace(
         t5_out_dim=T5, latent_dim=D, ff_size=FF, layers=L, dropout_prob=0.0,
         value_emb=False, cross_limb_latents=2, cross_limb_dim=8, cross_limb_last_n=1,
-        joint_mask_prob=0.0, unreliable_mask_drop_prob=0.0,
-        temporal_span_mask_prob=0.0, species_cond=True,
+        species_cond=True,
         joint_name_drop_prob=0.0, action_label_cond=True,
         direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
         action_conditioning=None,
@@ -49,38 +42,38 @@ def _shapes(model):
     return {k: tuple(v.shape) for k, v in model.state_dict().items()}
 
 
-def test_get_gmdm_args_defaults_species_to_128_and_other_heads_to_full_width():
+def test_get_gmdm_args_only_exposes_last_layer_width():
     a = _args()
     for k in ('action_adaln_bottleneck', 'species_film_bottleneck', 'last_layer_ff'):
         assert not hasattr(a, k)
     kw = get_gmdm_args(a)
-    assert kw['action_adaln_bottleneck'] == 0
-    assert kw['species_film_bottleneck'] == 128
+    assert 'action_adaln_bottleneck' not in kw
+    assert 'species_film_bottleneck' not in kw
     assert kw['last_layer_ff'] == 0
 
 
 def test_explicit_defaults_match_implicit_layout():
     base = MotionDiffusion(**get_gmdm_args(_args()))
     explicit = MotionDiffusion(**get_gmdm_args(_args(
-        action_adaln_bottleneck=0, species_film_bottleneck=128, last_layer_ff=0)))
+        last_layer_ff=0)))
     assert _shapes(base) == _shapes(explicit)
     dec = base.seqTransDecoder
     assert dec.action_adaln[0].out_features == D
-    assert base.input_process.species_film_j[0].out_features == 128
+    assert base.input_process.species_film_j[0].out_features == D
     assert [layer.linear1.out_features for layer in dec.layers] == [FF] * L
 
 
-def test_v24_widths_land_where_they_should():
+def test_full_width_conditioning_heads_and_narrow_last_layer():
     m = MotionDiffusion(**get_gmdm_args(_args(
-        action_adaln_bottleneck=12, species_film_bottleneck=8, last_layer_ff=16)))
+        last_layer_ff=16)))
     dec = m.seqTransDecoder
-    assert tuple(dec.action_adaln[0].weight.shape) == (12, D)
-    assert tuple(dec.action_adaln[2].weight.shape) == (L * ACTION_ADALN_PARAMS_PER_LAYER * D, 12)
+    assert tuple(dec.action_adaln[0].weight.shape) == (D, D)
+    assert tuple(dec.action_adaln[2].weight.shape) == (L * ACTION_ADALN_PARAMS_PER_LAYER * D, D)
     # Output layer stays zero-init: gamma = beta = 0 on a fresh model.
     assert torch.count_nonzero(dec.action_adaln[2].weight) == 0
     assert torch.count_nonzero(dec.action_adaln[2].bias) == 0
-    assert tuple(m.input_process.species_film_j[0].weight.shape) == (8, T5 + species_code_dim(T5))
-    assert tuple(m.input_process.species_film_j[2].weight.shape) == (2 * T5, 8)
+    assert tuple(m.input_process.species_film_j[0].weight.shape) == (D, T5 + species_code_dim(T5))
+    assert tuple(m.input_process.species_film_j[2].weight.shape) == (2 * T5, D)
     assert torch.count_nonzero(m.input_process.species_film_j[2].weight) == 0
     # Only the LAST layer is narrower; the others keep ff_size.
     assert [layer.linear1.out_features for layer in dec.layers] == [FF] * (L - 1) + [16]
@@ -104,18 +97,17 @@ def test_last_layer_ff_replacement_keeps_dropout_and_activation():
     assert last.activation is layer.activation
 
 
-@pytest.mark.parametrize('flag', ['action_adaln_bottleneck', 'species_film_bottleneck', 'last_layer_ff'])
+@pytest.mark.parametrize('flag', ['last_layer_ff'])
 def test_negative_widths_are_refused(flag):
     with pytest.raises(ValueError, match=flag):
         MotionDiffusion(**get_gmdm_args(_args(**{flag: -1})))
 
 
-def test_forward_runs_with_narrow_heads():
+def test_forward_runs_with_full_width_heads():
     torch.manual_seed(0)
     m = MotionDiffusion(**get_gmdm_args(_args(
-        action_adaln_bottleneck=12, species_film_bottleneck=8, last_layer_ff=16))).eval()
-    # A minimal batch through the decoder alone, which is where two of the
-    # three knobs live; MotionDiffusion.forward needs the full cond bundle.
+        last_layer_ff=16))).eval()
+    # Exercise action modulation through the decoder with a minimal condition.
     dec = m.seqTransDecoder
     B, J, frames = 2, 4, 5
     y = {
@@ -132,3 +124,15 @@ def test_forward_runs_with_narrow_heads():
     )
     assert tuple(out.shape) == (frames, B, J, D)
     assert torch.isfinite(out).all()
+
+
+@pytest.mark.parametrize("flag", ["action_adaln_bottleneck", "species_film_bottleneck"])
+def test_parser_rejects_removed_head_width_options(flag):
+    from argparse import ArgumentParser
+    from utils.parser_util import add_model_options
+
+    parser = ArgumentParser()
+    add_model_options(parser)
+    assert flag not in vars(parser.parse_args([]))
+    with pytest.raises(SystemExit):
+        parser.parse_args([f"--{flag}", "16"])
