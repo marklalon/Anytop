@@ -57,6 +57,11 @@
   button { cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
+  .mode-toggle { display: inline-flex; gap: 0; }
+  .mode-toggle button { border-radius: 0; }
+  .mode-toggle button:first-child { border-radius: 4px 0 0 4px; }
+  .mode-toggle button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
+  .mode-toggle button.active { color: #fff; background: #465a70; border-color: var(--accent); }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .counts { color: var(--dim); font-size: 12px; }
@@ -112,8 +117,8 @@
   .viewbtns button#meshView { color: var(--dim); background: rgba(255,255,255,.04); border-color: var(--edge); }
   .viewbtns button#meshView.on { color: #fff; background: rgba(255,255,255,.28); border-color: #cfcfcf; opacity: 1; }
   .viewbtns button#meshView:disabled { opacity: .4; }
-  .legend { position: absolute; top: 8px; right: 10px; z-index: 4; display: flex; gap: 10px;
-    font-size: 12px; color: var(--dim); }
+  .legend { position: absolute; top: 8px; right: 10px; z-index: 4; display: flex; flex-wrap: wrap;
+    justify-content: flex-end; gap: 4px 10px; max-width: 70%; font-size: 12px; color: var(--dim); }
   #title {
     position: absolute; bottom: 8px; left: 10px; z-index: 4;
     color: var(--dim); font-size: 12px; pointer-events: none;
@@ -176,6 +181,10 @@
   <input type="search" id="q" placeholder="搜索物种">
   <span class="counts" id="count"></span>
   <span class="spacer"></span>
+  <div class="mode-toggle" id="colorMode" role="group" aria-label="关节着色模式">
+    <button type="button" data-color-mode="side">左右侧</button>
+    <button type="button" data-color-mode="part">部位</button>
+  </div>
   <select id="nav" title="切换页面">
     <option value="/">动作标签</option>
     <option value="/joints" selected>关节名</option>
@@ -214,7 +223,7 @@
   <div id="side">
     <div id="tableWrap">
       <table>
-        <thead><tr><th>#</th><th>名字</th><th>Canonical</th><th title="T5 joint-name embedding text">EmbedText</th><th>侧</th><th title="mirror twin">镜像</th></tr></thead>
+        <thead><tr><th>#</th><th>名字</th><th>Canonical</th><th title="T5 joint-name embedding text">EmbedText</th><th>侧</th><th>部位</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -240,9 +249,20 @@ import { GLTFLoader } from 'three/addons/GLTFLoader.js';
 
 const SIDE_COLORS = { left: '#4f8fe6', right: '#e05a5a', center: '#b8b8b8' };
 const SIDE_LABELS = { left: '左', right: '右', center: '中' };
+// Part labels follow motion_edit.parts.JOINT_PARTS plus its helper label.
+const PART_COLORS = {
+  trunk: '#9aa3b5', neck: '#d7b56d', head: '#ffd166', arm: '#4fa3ff',
+  hand: '#8ccfff', leg: '#46b866', foot: '#a6e3a1', wing: '#c792ea',
+  tail: '#ff9f43', fin: '#2ec4b6', soft: '#ff6b9a', helper: '#5c6370',
+};
+const PART_LABELS = {
+  trunk: '躯干', neck: '颈', head: '头', arm: '臂', hand: '手', leg: '腿',
+  foot: '足', wing: '翅', tail: '尾', fin: '鳍', soft: '软组织', helper: '辅助',
+};
 
 const $ = (id) => document.getElementById(id);
 let hoverIndex = null;   // joint under the cursor (viewport or table)
+let colorMode = recall('colorMode') === 'side' ? 'side' : 'part';
 // The dataset selector's aggregate entry; species then carry their own ``ds``.
 const ALL_DATASETS = 'all';
 const state = {
@@ -419,8 +439,36 @@ function fitOrtho() {
 new ResizeObserver(resize).observe(view);
 
 scene.background = new THREE.Color(cssVar('--view-bg'));
-$('legend').innerHTML = Object.entries(SIDE_COLORS)
-  .map(([side, color]) => `<span><span class="sw" style="background:${color}"></span> ${SIDE_LABELS[side]}</span>`).join('');
+function activeColorMap() { return colorMode === 'part' ? PART_COLORS : SIDE_COLORS; }
+function jointColor(joint) {
+  const colors = activeColorMap();
+  return colors[colorMode === 'part' ? joint.part : joint.side] || colors.center || colors.helper;
+}
+function updateLegend() {
+  const colors = activeColorMap();
+  const labels = colorMode === 'part' ? PART_LABELS : SIDE_LABELS;
+  $('legend').innerHTML = Object.entries(colors)
+    .map(([key, color]) => `<span><span class="sw" style="background:${color}"></span> ${labels[key] || key}</span>`).join('');
+}
+function syncColorModeButtons() {
+  $('colorMode').querySelectorAll('[data-color-mode]').forEach((button) => {
+    const active = button.dataset.colorMode === colorMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+updateLegend();
+syncColorModeButtons();
+$('colorMode').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-color-mode]');
+  if (!button || button.dataset.colorMode === colorMode) return;
+  colorMode = button.dataset.colorMode;
+  remember('colorMode', colorMode);
+  syncColorModeButtons();
+  updateLegend();
+  refreshVisuals();
+  renderTable();
+});
 
 function disposeSkeleton() {
   meshToken++;
@@ -554,7 +602,7 @@ function buildSkeleton(bvhText, payload) {
 const tmpColor = new THREE.Color();
 const tmpMatrix = new THREE.Matrix4();
 const zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
-const SPHERE_RADIUS = 0.018, HALO_SCALE = 1.3;
+const SPHERE_RADIUS = 0.0144, HALO_SCALE = 1.3;
 
 function ringTexture() {
   const size = 64, canvas = document.createElement('canvas');
@@ -576,7 +624,7 @@ function refreshVisuals() {
   joints.forEach((j) => {
     const p = skel.positions[j.index];
     skel.solid.setMatrixAt(j.index, tmpMatrix.makeScale(r, r, r).setPosition(p));
-    skel.solid.setColorAt(j.index, tmpColor.set(SIDE_COLORS[j.side] || SIDE_COLORS.center));
+    skel.solid.setColorAt(j.index, tmpColor.set(jointColor(j)));
     skel.halo.setMatrixAt(j.index, state.selected.has(j.index)
       ? tmpMatrix.makeScale(hr, hr, hr).setPosition(p) : zeroMatrix);
     skel.twinHalo.setMatrixAt(j.index, twins.has(j.index)
@@ -593,7 +641,7 @@ function refreshVisuals() {
   }
   const colors = skel.lines.geometry.getAttribute('color');
   skel.lines.userData.segments.forEach((child, s) => {
-    tmpColor.set(SIDE_COLORS[joints[child].side] || SIDE_COLORS.center);
+    tmpColor.set(jointColor(joints[child]));
     colors.setXYZ(2 * s, tmpColor.r, tmpColor.g, tmpColor.b);
     colors.setXYZ(2 * s + 1, tmpColor.r, tmpColor.g, tmpColor.b);
   });
@@ -1015,7 +1063,7 @@ function pick(event) {
 
 function jointTip(j) {
   const twin = j.twin >= 0 ? state.current.joints[j.twin].name : '—';
-  return `${j.name}\nCanonical: ${j.canonical}\nEmbedText: ${j.text || '（空）'}\n侧：${SIDE_LABELS[j.side] || j.side} · 镜像：${twin}`
+  return `${j.name}\nCanonical: ${j.canonical}\nEmbedText: ${j.text || '（空）'}\n侧：${SIDE_LABELS[j.side] || j.side} · 部位：${PART_LABELS[j.part] || j.part} · 镜像：${twin}`
     + (j.limb_tip ? '\n肢体末端（白圈）' : '');
 }
 
@@ -1142,10 +1190,10 @@ function renderTable() {
     side.innerHTML = `<span class="sw" style="background:${SIDE_COLORS[j.side] || SIDE_COLORS.center}"></span> `;
     side.appendChild(document.createTextNode(SIDE_LABELS[j.side] || j.side));
     tr.appendChild(side);
-    const twin = document.createElement('td');
-    twin.className = 'tw';
-    twin.textContent = j.twin >= 0 ? joints[j.twin].name : '';
-    tr.appendChild(twin);
+    const part = document.createElement('td');
+    part.innerHTML = `<span class="sw" style="background:${PART_COLORS[j.part] || PART_COLORS.helper}"></span> `;
+    part.appendChild(document.createTextNode(PART_LABELS[j.part] || j.part || '辅助'));
+    tr.appendChild(part);
     tr.addEventListener('click', (event) => {
       const index = j.index;
       if (event.shiftKey && state.anchor !== null) {

@@ -167,7 +167,10 @@ from data_loaders.truebones.truebones_utils.joint_name_canonical import (  # noq
 from data_loaders.truebones.truebones_utils.high_frequency import (  # noqa: E402
     high_frequency_clips,
 )
-from data_loaders.truebones.truebones_utils.joint_parts import prefill_limb_tips  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_parts import (  # noqa: E402
+    prefill_joint_parts,
+    prefill_limb_tips,
+)
 from data_loaders.truebones.truebones_utils.tpose_bvh import (  # noqa: E402
     tpose_dfs_order,
     write_tpose_bvh,
@@ -1113,6 +1116,7 @@ class JointNamesStore:
         refreshed = copy.deepcopy(entry)
         refresh_joint_metadata_in_object_cond(refreshed)
         limb_tips = set(prefill_limb_tips(refreshed))
+        part_prefill = prefill_joint_parts(refreshed)
         joints = [{
             "index": index,
             "name": name,
@@ -1120,6 +1124,7 @@ class JointNamesStore:
             "text": texts[index] if index < len(texts) else "",
             "parent": parents[index],
             "side": sides[index],
+            "part": part_prefill.get(name, {}).get("part", "helper"),
             "twin": int(twins[index]),
             "limb_tip": index in limb_tips,
         } for index, name in enumerate(names)]
