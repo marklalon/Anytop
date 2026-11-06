@@ -10,7 +10,7 @@ from model.motion_autoencoder import MotionAutoencoder, DECODER_CONTENT_VERSION
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_FEATURE_SPACE
 from diffusion.latent_diffusion import validate_latent_conditions
 
-LATENT_CHECKPOINT_VERSION = 'latent_diffusion_v2'
+LATENT_CHECKPOINT_VERSION = 'latent_diffusion_v3'
 TIME_CONTRACT = 'fixed60_v1'
 SKELETON_KEYS = ('n_joints', 'joints_names_embs', 'rest_geom', 'joint_struct',
                  'graph_dist', 'joints_relations')
@@ -134,11 +134,8 @@ def load_latent_checkpoint(path, device='cpu', ae_checkpoint=None):
     if {k: v for k, v in binding.items() if k != 'path'} != {
             k: v for k, v in payload['ae_binding'].items() if k != 'path'}:
         raise ValueError('Frozen AE hash/configuration does not match latent checkpoint')
-    config = without_removed_skeleton_drops(payload['model_config'])
-    # Older checkpoints may record tempo dropout; tempo is now always kept.
-    config.pop('tempo_cfg_drop_prob', None)
-    model = LatentMotionDenoiser(**config)
-    model.load_state_dict(payload['model_ema'] if payload['model_ema'] is not None else payload['model'])
+    model = LatentMotionDenoiser(**payload['model_config'])
+    model.load_state_dict(payload['model_ema'] if payload['model_ema'] is not None else payload['model'], strict=True)
     if model.action_label_cond:
         model.validate_loaded_action_conditioning(payload['action_conditioning'], str(path))
     norm = LatentNormalizer.from_metadata(payload['normalization']).to(device)

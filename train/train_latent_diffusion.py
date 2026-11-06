@@ -25,7 +25,7 @@ from train.latent_validation import build_validation_loader
 from train.training_loop import _fixed_validation_rng
 from train.train_autoencoder import (
     AUGMENTATION_DEFAULTS, training_batches, training_batch_to_device,
-    scaled_optimizer_step, update_autoencoder_ema, reconstruction_mse, create_lr_scheduler)
+    scaled_optimizer_step, update_autoencoder_ema, reconstruction_mse)
 from model.motion_autoencoder import motion_masks
 from utils.fixseed import fixseed
 from utils.checkpoint_cond import snapshot_training_cond
@@ -33,6 +33,7 @@ from utils.latent_util import (
     LATENT_CHECKPOINT_VERSION, TIME_CONTRACT, LatentNormalizer, ae_inputs,
     load_frozen_autoencoder, encode_target, file_sha256)
 from utils.latent_analysis import load_or_analyze, validate_sensitivity_loss
+from utils.lr_schedule import cosine_decay_lr_lambda
 
 
 class LatentBatchTransform:
@@ -99,6 +100,8 @@ def parser():
                            rest_geom_joint_drop_prob=0.1).items():
         p.add_argument('--' + key, type=float, default=value)
     p.add_argument('--lr_decay_start', type=int, default=0)
+    p.add_argument('--lr_warmup_steps', type=int, default=0,
+                   help='Linearly ramp LR over the first N optimizer steps, then follow the original cosine schedule')
     p.add_argument('--noise_schedule', default='cosine', choices=('cosine', 'linear'))
     p.add_argument('--joint_buckets', type=int, nargs='+')
     # These augment the paired AE target; joint name and rest geometry dropout
@@ -112,6 +115,23 @@ def parser():
 def recorded_args(args):
     return {key: value for key, value in vars(args).items()
             if key not in ('action_conditioning', 'species_descriptor_table')}
+
+
+def create_lr_scheduler(optimizer, args, completed_steps=0):
+    warmup = args.lr_warmup_steps
+    if not 0 <= warmup <= args.num_steps:
+        raise ValueError('lr_warmup_steps must be in [0, num_steps]')
+    decay = cosine_decay_lr_lambda(args.lr, args.lr_final, args.lr_decay_start, args.num_steps)
+
+    def multiplier(step):
+        # LambdaLR index 0 supplies the LR for optimizer step 1.
+        ramp = min((step + 1) / warmup, 1.0) if warmup else 1.0
+        return decay(step) * ramp
+
+    for group in optimizer.param_groups:
+        group['initial_lr'] = args.lr
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer, multiplier, last_epoch=completed_steps - 1)
 
 
 def training_forwards(model, ae, norm, compile_mode):
@@ -249,6 +269,8 @@ def main(argv=None):
     args = parser().parse_args(argv)
     if args.num_frames != 60:
         raise ValueError('Only fixed 60-frame training is supported')
+    if not 0 <= args.lr_warmup_steps <= args.num_steps:
+        raise ValueError('lr_warmup_steps must be in [0, num_steps]')
     if min(args.batch_size, args.stats_batches, args.sensitivity_samples, args.sensitivity_probes,
            args.num_steps, args.log_interval,
            args.save_interval) < 1 or args.eval_interval < 0:
@@ -287,7 +309,7 @@ def main(argv=None):
         mutable = {'auto_resume', 'num_steps', 'log_interval', 'eval_interval', 'save_interval',
                    'num_workers', 'main_process_prefetch_batches', 'motion_cache_size', 'device', 'compile'}
         for key, value in current_args.items():
-            if key not in mutable and value != resume['args'].get(key):
+            if key not in mutable and value != resume['args'][key]:
                 raise ValueError(f'Cannot resume with changed {key}')
         if args.num_steps != resume['args']['num_steps']:
             raise ValueError('num_steps binds the LR schedule; use a new run to change it')
@@ -342,6 +364,7 @@ def main(argv=None):
     config['joint_name_drop_prob'] = 0.0
     config['rest_geom_joint_drop_prob'] = 0.0
     model = LatentMotionDenoiser(**config, action_conditioning=args.action_conditioning).to(device)
+    print('Skeleton read gates: enabled (initial value 0.1)')
     if resume:
         model.load_state_dict(resume['model'], strict=True)
         if args.action_label_cond:
@@ -374,6 +397,7 @@ def main(argv=None):
     print(f'Frozen AE: {binding["path"]} ({binding["weights"]}); latent={ae.slots}x{ae.latent_dim}; '
           f'{args.latent_mode} statistics: {norm.count} frame tokens; resume step={start}')
     print('Online encoding; fixed 60 valid frames; no motion geometry training losses or editing.')
+    print(f'LR warmup: {args.lr_warmup_steps} optimizer steps; current LR={optimizer.param_groups[0]["lr"]:.6g}')
     print(f'Global latent normalization; decoder-sensitivity weighted x0 MSE; '
           f'weights mean={float(loss_weights.mean()):.4f}, '
           f'range=[{float(loss_weights.min()):.4f}, {float(loss_weights.max()):.4f}]')

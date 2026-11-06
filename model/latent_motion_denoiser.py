@@ -38,6 +38,8 @@ class LatentDecoderLayer(GraphMotionDecoderLayer):
         self.skeleton_norm = nn.LayerNorm(self.d_model)
         self.skeleton_attention = nn.MultiheadAttention(
             self.d_model, self.heads, batch_first=True)
+        # Start with weak conditioning while allowing attention to learn immediately.
+        self.skeleton_gate = nn.Parameter(torch.tensor(0.1))
 
     def _read_motion_latent(self, x, context):
         skeleton, padding = context
@@ -46,6 +48,7 @@ class LatentDecoderLayer(GraphMotionDecoderLayer):
         query = self.skeleton_norm(x).permute(1, 0, 2, 3).reshape(batch, frames * slots, width)
         read, _ = self.skeleton_attention(query, skeleton, skeleton,
                                           key_padding_mask=padding, need_weights=False)
+        read = self.skeleton_gate * read
         return x + read.reshape(batch, frames, slots, width).permute(1, 0, 2, 3)
 
 

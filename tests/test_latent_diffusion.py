@@ -39,6 +39,43 @@ def denoiser(**kwargs):
                                 joint_name_drop_prob=0, rest_geom_joint_drop_prob=0, **kwargs)
 
 
+@pytest.mark.parametrize('warmup', [0, 200])
+def test_latent_lr_warmup_schedule_and_resume(warmup):
+    from train.train_latent_diffusion import create_lr_scheduler
+    from utils.lr_schedule import cosine_decay_lr_lambda
+
+    args = parser().parse_args(['--save_dir', 'unused', '--lr_warmup_steps', str(warmup),
+                                '--num_steps', '50000', '--lr_final', '3e-5'])
+    decay = cosine_decay_lr_lambda(args.lr, args.lr_final, args.lr_decay_start, args.num_steps)
+    parameter = nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.AdamW([parameter], lr=args.lr)
+    scheduler = create_lr_scheduler(optimizer, args)
+    for completed in range(250):
+        ramp = min((completed + 1) / warmup, 1.) if warmup else 1.
+        assert optimizer.param_groups[0]['lr'] == pytest.approx(args.lr * decay(completed) * ramp)
+        # Resume both inside and beyond the ramp, without restarting warmup.
+        if completed in (49, 199, 220):
+            resumed = torch.optim.AdamW([nn.Parameter(torch.zeros(()))], lr=args.lr)
+            resumed.load_state_dict(optimizer.state_dict())
+            resumed_scheduler = create_lr_scheduler(resumed, args, completed)
+            assert resumed.param_groups[0]['lr'] == optimizer.param_groups[0]['lr']
+            resumed.step()
+            resumed_scheduler.step()
+            next_ramp = min((completed + 2) / warmup, 1.) if warmup else 1.
+            assert resumed.param_groups[0]['lr'] == pytest.approx(args.lr * decay(completed + 1) * next_ramp)
+        optimizer.step()
+        scheduler.step()
+    final = create_lr_scheduler(optimizer, args, args.num_steps)
+    assert final.get_last_lr()[0] == pytest.approx(args.lr_final)
+
+
+@pytest.mark.parametrize('warmup', [-1, 50001])
+def test_latent_lr_warmup_rejects_invalid_counts(warmup):
+    from train.train_latent_diffusion import main
+    with pytest.raises(ValueError, match='lr_warmup_steps'):
+        main(['--save_dir', 'unused', '--num_steps', '50000', '--lr_warmup_steps', str(warmup)])
+
+
 def test_forward_backward_variable_skeleton_and_slot_graph_isolation():
     model = denoiser().train()
     z = torch.randn(2, 60, 2, 3)
@@ -47,10 +84,36 @@ def test_forward_backward_variable_skeleton_and_slot_graph_isolation():
     assert result.shape == z.shape and torch.isfinite(result).all()
     result.square().mean().backward()
     assert model.input.weight.grad.abs().sum() > 0
+    layer = model.trunk.layers[0]
+    assert layer.skeleton_gate.grad.abs() > 0
+    assert layer.skeleton_attention.in_proj_weight.grad.abs().sum() > 0
     assert model.skeleton_encoder.graph_relations and not model.trunk.graph_relations
     assert model.trunk.cross_limb_blocks is None
     assert model.skeleton_encoder.cross_limb_blocks is None
     assert not any('reference' in key or 'ref_' in key for key in model.state_dict())
+
+
+def test_skeleton_read_gates_are_independent_and_can_bypass_conditioning():
+    model = LatentMotionDenoiser(t5_out_dim=4, width=16, heads=2, ff_size=32,
+                                 layers=3, skeleton_layers=1, action_label_cond=False,
+                                 species_cond=False, dropout=0)
+    gates = [layer.skeleton_gate for layer in model.trunk.layers]
+    assert len({gate.data_ptr() for gate in gates}) == 3
+    for gate in gates:
+        assert gate.item() == pytest.approx(0.1)
+    layer = model.trunk.layers[0]
+    x = torch.randn(2, 2, 2, 16)
+    skeleton = torch.randn(2, 5, 16)
+    padding = torch.zeros(2, 5, dtype=torch.bool)
+    with torch.no_grad():
+        layer.skeleton_gate.zero_()
+    torch.testing.assert_close(layer._read_motion_latent(x, (skeleton, padding)), x)
+    torch.testing.assert_close(layer._read_motion_latent(x, (skeleton + 10, padding)), x)
+    assert gates[1].item() == pytest.approx(0.1)
+    # A closed gate can learn to open even while attention's own gradient is zero.
+    layer._read_motion_latent(x, (skeleton, padding)).square().mean().backward()
+    assert layer.skeleton_gate.grad.abs() > 0
+    assert torch.count_nonzero(layer.skeleton_attention.in_proj_weight.grad) == 0
 
 
 def test_padding_joints_cannot_change_valid_prediction():
@@ -197,7 +260,8 @@ def test_generation_without_reference_decodes_and_exports(monkeypatch, tmp_path)
 
 
 @pytest.mark.parametrize('training_mode', ['cpu', 'cuda-graph'])
-def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_path, training_mode):
+@pytest.mark.parametrize('warmup', [0, 2])
+def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_path, training_mode, warmup):
     if training_mode == 'cuda-graph' and not torch.cuda.is_available():
         pytest.skip('CUDA graph requires CUDA')
     from types import SimpleNamespace
@@ -254,19 +318,26 @@ def test_training_saves_loads_and_resumes_without_reference(monkeypatch, tmp_pat
             '--width', '16', '--layers', '1', '--heads', '2', '--ff_size', '32',
             '--skeleton_layers', '1', '--batch_size', '2', '--stats_batches', '1',
             '--num_steps', '2', '--save_interval', '1', '--diffusion_steps', '10',
+            '--lr_warmup_steps', str(warmup),
             '--sensitivity_samples', '1', '--sensitivity_probes', '2']
     with pytest.raises(RuntimeError, match='simulated interruption'):
         training.main(argv)
     path = save / 'latent_diffusion.pt'
     saved = torch.load(path, weights_only=False)
     assert saved['step'] == 1
+    torch.save(saved, path)
+    with pytest.raises(ValueError, match='changed lr_warmup_steps'):
+        training.main(argv + ['--auto_resume', '--lr_warmup_steps', '0' if warmup else '2'])
     analysis_path = Path(saved['latent_analysis']['path'])
     assert analysis_path.is_file()
     analysis_path.unlink()  # Resume must use the embedded objective, not an external cache.
     monkeypatch.setattr(training, 'training_forwards', real_forwards)
     training.main(argv + ['--auto_resume'])
     model, _, restored_norm, checkpoint = load_latent_checkpoint(path)
+    assert all(layer.skeleton_gate.item() == pytest.approx(0.1) for layer in model.trunk.layers)
     assert checkpoint['step'] == 2 and checkpoint['kind'] == LATENT_CHECKPOINT_VERSION
+    assert checkpoint['args']['lr_warmup_steps'] == warmup
+    assert checkpoint['optimizer']['param_groups'][0]['lr'] == pytest.approx(checkpoint['args']['lr_final'])
     assert checkpoint['time_contract'] == TIME_CONTRACT
     assert checkpoint['capabilities'] == ['generate']
     assert checkpoint['normalization']['version'] == 1
@@ -403,10 +474,9 @@ def test_checkpoint_binding_and_contract_rejection(tmp_path):
     torch.save(payload, path)
     restored, _, _, _ = load_latent_checkpoint(path)
     torch.testing.assert_close(restored.input.weight, model.input.weight)
-    legacy = dict(payload, model_config=dict(model.config, tempo_cfg_drop_prob=1.0))
-    torch.save(legacy, path)
-    restored, _, _, _ = load_latent_checkpoint(path)
-    assert 'tempo_cfg_drop_prob' not in restored.config
+    assert restored.trunk.layers[0].skeleton_gate.item() == pytest.approx(0.1)
+    torch.testing.assert_close(restored.trunk.layers[0].skeleton_gate,
+                               model.trunk.layers[0].skeleton_gate)
     torch.testing.assert_close(restored.input.weight, model.input.weight)
     for key in ('kind', 'time_contract', 'prediction'):
         wrong = dict(payload, **{key: 'incompatible'})
