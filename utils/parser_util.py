@@ -286,11 +286,15 @@ def add_model_options(parser):
                             "of the cycle. 1.0 turns loop tiling off. Loader-only, like --motion_speed_aug: no regen, no bump.")
     group.add_argument("--topology_aug_prob", default=0.0, type=float,
                        help="Per-sample probability of the topology augmentation (0.0 = off). A firing "
-                            "draw picks one of two edits uniformly, falling back to the other when the "
+                            "draw picks one of three edits uniformly, trying the others when the "
                             "rig offers it nothing (truebones_utils/topology_aug.py). Leaf drop: every "
                             "eligible terminator leaf (named Nub / end / site / Container, or locally "
                             "static and nameless) plus trailing segments of repeated-name chains, mirror "
-                            "twins together. Chain merge: 1..3 single-child "
+                            "twins together. Limb drop: one whole tail (only with an arm or leg part), "
+                            "soft/helper chain, leg chain "
+                            "(at least six legs), or arm/wing chain (wings, arms and legs coexist), "
+                            "with its mirror if present; at least 10 joints remain. "
+                            "Chain merge: 1..3 single-child "
                             "joints removed, their child taking the joined bone, only where the merged "
                             "bone's FK residual stays small on every frame. Leaf drop is exact "
                             "on the kept features; joint_struct, the relation matrices and L are rebuilt "

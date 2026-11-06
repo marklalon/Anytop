@@ -21,7 +21,7 @@ from typing import Optional
 
 import numpy as np
 
-from data_loaders.truebones.truebones_utils.joint_parts import prefill_joint_parts
+from data_loaders.truebones.truebones_utils.joint_parts import joint_part_labels
 from data_loaders.truebones.truebones_utils.topology_relations import (
     refresh_topology_relations_in_object_cond,
 )
@@ -55,6 +55,7 @@ LEAF_DROP_GUARDED_PART_GROUPS = (
 
 # Per-joint arrays/lists sliced along their first axis.
 _ROW_KEYS = (
+    'joint_parts',
     'offsets',
     'rest_pose',
     'rest_pose_physical',
@@ -106,34 +107,15 @@ def _protected_joints(entry, translation_root_index) -> set[int]:
     return protected
 
 
-_GUARDED_ROOTS_CACHE: dict[tuple, frozenset[int]] = {}
-
-
 def _guarded_chain_roots(entry) -> frozenset[int]:
     """Top joint of every chain of a ``LEAF_DROP_GUARDED_PART_GROUPS`` group,
-    from the prefilled body parts; cached per skeleton."""
+    from the source rig's stored body parts."""
     parents = np.asarray(entry['parents'], dtype=np.int64)
-    names = [str(name) for name in entry['joints_names']]
-    key = (
-        tuple(names),
-        parents.tobytes(),
-        np.asarray(entry['offsets'], dtype=np.float64).tobytes(),
-        tuple(entry.get('species_tags') or ()),
-        str(entry.get('species_name') or entry.get('object_type') or ''),
-        tuple(str(name) for name in entry.get('canonical_joint_names') or ()),
-        tuple(str(side) for side in entry.get('joint_side_labels') or ()),
-        _int_or_none(entry.get('translation_root_index')),
+    parts = joint_part_labels(entry)
+    return frozenset(
+        joint for joint in range(parents.shape[0]) for group in LEAF_DROP_GUARDED_PART_GROUPS
+        if parts[joint] in group and (parents[joint] < 0 or parts[parents[joint]] not in group)
     )
-    roots = _GUARDED_ROOTS_CACHE.get(key)
-    if roots is None:
-        prefill = prefill_joint_parts(entry)
-        parts = [prefill[name]['part'] for name in names]
-        roots = frozenset(
-            joint for joint in range(parents.shape[0]) for group in LEAF_DROP_GUARDED_PART_GROUPS
-            if parts[joint] in group and (parents[joint] < 0 or parts[parents[joint]] not in group)
-        )
-        _GUARDED_ROOTS_CACHE[key] = roots
-    return roots
 
 
 def static_joint_mask(motion, joint_indices) -> np.ndarray:
@@ -288,7 +270,11 @@ def _mirror_units(candidates, partners) -> list[tuple[int, ...]]:
 def drop_joints_from_cond(entry, dropped):
     """Return ``(keep, new_entry)``: ``entry`` restricted to the joints not in
     ``dropped``, with every per-joint field sliced and every joint index
-    remapped. ``dropped`` must hold leaves only. ``entry`` is not modified."""
+    remapped. ``entry`` is not modified.
+
+    ``dropped`` must be closed under descendants: a whole leaf, a peeled chain
+    or a whole subtree all qualify, because no kept joint may lose its parent.
+    """
     parents = np.asarray(entry['parents'], dtype=np.int64)
     joint_count = int(parents.shape[0])
     dropped_set = {int(joint) for joint in dropped}
@@ -296,7 +282,7 @@ def drop_joints_from_cond(entry, dropped):
     new_index = np.full((joint_count,), -1, dtype=np.int64)
     new_index[keep] = np.arange(keep.shape[0])
     if np.any(np.isin(parents[keep], sorted(dropped_set))):
-        raise ValueError("drop_joints_from_cond removes leaves only; a kept joint's parent was dropped.")
+        raise ValueError("drop_joints_from_cond requires a parent-closed removal; a kept joint's parent was dropped.")
 
     def remap(index):
         index = _int_or_none(index)
@@ -311,6 +297,8 @@ def drop_joints_from_cond(entry, dropped):
             continue
         if isinstance(value, np.ndarray):
             new_entry[key] = value[keep]
+        elif isinstance(value, tuple):
+            new_entry[key] = tuple(value[j] for j in keep)
         else:
             new_entry[key] = [value[j] for j in keep]
 
@@ -346,5 +334,6 @@ def drop_joints_from_cond(entry, dropped):
         new_chains = [[int(new_index[int(j)]) for j in chain if int(j) not in dropped_set] for chain in chains]
         new_entry['kinematic_chains'] = [chain for chain in new_chains if chain]
 
+    new_entry.pop('rest_length_scale', None)
     refresh_topology_relations_in_object_cond(new_entry)
     return keep, new_entry

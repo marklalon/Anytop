@@ -81,6 +81,9 @@ def test_val_with_only_short_clips_is_an_empty_split(monkeypatch, tmp_path):
     opt = SimpleNamespace(sources=[source], min_length=20, cond_file='unused', motion_cache_size=0)
     monkeypatch.setattr(dataset_module, 'rest_geometry', lambda entry: None)
     monkeypatch.setattr(dataset_module, 'build_joint_struct_features', lambda *a, **kw: None)
+    # The stub cond carries no skeleton, so the per-species part labels (and the
+    # limb chains built from them) are stubbed out rather than inferred.
+    monkeypatch.setattr(dataset_module, 'joint_part_labels', lambda entry: ())
     monkeypatch.setattr(dataset_module, '_build_limb_chains', lambda entry: (None, None, None))
     monkeypatch.setattr(dataset_module, 'high_frequency_clips', lambda *args: set())
     monkeypatch.setattr(dataset_module, '_require_motion_metadata_entry', lambda *args: {})

@@ -179,8 +179,9 @@ def test_draw_falls_back_when_a_kind_has_nothing(monkeypatch):
     motion = _motion(entry, {})
     rng = random.Random(1)
     monkeypatch.setattr(topology_aug, 'sample_leaf_drop', lambda *args, **kwargs: [])
+    monkeypatch.setattr(topology_aug, 'sample_limb_drop', lambda *args, **kwargs: [])
     for _ in range(20):
-        # No leaf is droppable: the draw lands on a merge.
+        # Neither drop can apply: the draw lands on a merge.
         _out, _new, info = augment_topology(motion, entry, 0, rng=rng)
         assert info['kind'] == 'merge'
 
@@ -191,7 +192,8 @@ _needs_merged = pytest.mark.skipif(not os.path.isfile(_MERGED_COND), reason='mer
 
 
 @_needs_merged
-def test_kept_rows_decode_to_the_stored_motion():
+@pytest.mark.parametrize('kind', ['merge', 'limb_drop'])
+def test_kept_rows_decode_to_the_stored_motion(kind, monkeypatch):
     import data_loaders.truebones.data.dataset as dataset_module
     from data_loaders.get_data import get_dataset
     from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
@@ -201,7 +203,15 @@ def test_kept_rows_decode_to_the_stored_motion():
         num_frames=60, split='train', objects_subset='all', action_group='all',
         topology_aug_prob=1.0, cond_path=_MERGED_COND,
     ).motion_dataset
-    motion_dataset.opt.topology_aug_kinds = ('merge',)
+    motion_dataset.opt.topology_aug_kinds = (kind,)
+    # Source classification is complete at loading; sample-time augmentations
+    # must consume its stored labels, including on edited rests.
+    from data_loaders.truebones.truebones_utils import joint_parts
+
+    def unexpected(*args, **kwargs):
+        pytest.fail('Source parts were reclassified during sampling')
+
+    monkeypatch.setattr(joint_parts, 'prefill_joint_parts', unexpected)
     captured = {}
     real_augment = dataset_module.augment_topology
 

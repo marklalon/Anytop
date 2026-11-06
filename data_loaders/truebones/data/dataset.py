@@ -66,6 +66,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 )
 from data_loaders.truebones.truebones_utils.joint_parts import (
     bone_path_lengths,
+    joint_part_labels,
     limb_tips,
     prefill_limb_end_chains,
 )
@@ -1000,6 +1001,9 @@ class MotionDataset(data.Dataset):
         # Per-joint, so the skeleton augmentations carry it with the rig; the
         # limb tips are picked from it per sample (_limb_tip_mask).
         for entry in cond_dict.values():
+            # Infer on the source rest once; every augmented rig inherits these
+            # semantics, with topology edits slicing the per-joint labels.
+            entry['joint_parts'] = joint_part_labels(entry)
             entry['limb_chain_id'], entry['limb_wing'], entry['limb_reach'] = _build_limb_chains(entry)
         self.head_word_weights = parse_head_word_weights(head_word_weights)
         self.rare_head_word_floor, self.rare_head_word_max_boost = parse_rare_head_word_floor(
@@ -1323,7 +1327,7 @@ class MotionDataset(data.Dataset):
             if rest_variant_info['applied']:
                 rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
-        # ── Topology augmentation (leaf drop / chain merge; see topology_aug.py) ──
+        # ── Topology augmentation (leaf / limb drop, merge; see topology_aug.py) ──
         # Runs on the stored clip, before any temporal stage: from here on the
         # sample IS the edited rig, so every later stage and the canonical
         # encode (whose L comes from the new rest) see that rig.

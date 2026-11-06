@@ -1,7 +1,7 @@
-"""Topology augmentation: leaf drop or chain merge, one per draw.
+"""Topology augmentation: leaf drop, limb drop or chain merge, one per draw.
 
-Leaf drop lives in ``leaf_drop.py``; this module adds chain merge and the
-draw between them (``augment_topology``).
+Leaf and limb drop live in ``leaf_drop.py`` and ``limb_drop.py``; this module
+adds chain merge and the draw between them (``augment_topology``).
 
 Merge. Removing a joint that has one child joins its two bones into one. The
 position channels are absolute, so every kept row keeps its position; the
@@ -31,6 +31,7 @@ from data_loaders.truebones.truebones_utils.leaf_drop import (
     drop_joints_from_cond,
     sample_leaf_drop,
 )
+from data_loaders.truebones.truebones_utils.limb_drop import sample_limb_drop
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 # Range of merge units per applied draw; a mirror pair counts as one.
@@ -57,8 +58,14 @@ def _matrix_to_rotation_6d(mat):
     return np.concatenate([mat[..., :, 0], mat[..., :, 1]], axis=-1)
 
 
-def _protected_joints(entry, translation_root_index) -> set[int]:
-    """Joints a merge keeps: the roots and every joint addressed by index."""
+def _indexed_joints(entry, translation_root_index) -> set[int]:
+    """Joints a topology edit must keep: the roots and every joint a downstream
+    stage addresses by index.
+
+    Distinct from ``leaf_drop._protected_joints``, which also guards every limb
+    and wing chain root; a limb drop exists precisely to remove such a chain,
+    so it protects the addressed joints only.
+    """
     protected = {0}
     for index in (translation_root_index, entry.get('translation_root_index'),
                   entry.get('forward_joint_index'), entry.get('forward_base_joint_index')):
@@ -134,7 +141,7 @@ def merge_candidates(entry, translation_root_index) -> list[tuple[int, ...]]:
     parents = np.asarray(entry['parents'], dtype=np.int64)
     joint_count = int(parents.shape[0])
     child_count = np.bincount(parents[parents >= 0], minlength=joint_count)
-    protected = _protected_joints(entry, translation_root_index)
+    protected = _indexed_joints(entry, translation_root_index)
     candidates = {
         joint for joint in range(joint_count)
         if parents[joint] >= 0 and child_count[joint] == 1 and joint not in protected
@@ -197,6 +204,14 @@ def _apply_leaf_drop(motion, cond, translation_root_index, target, rng):
     return motion[:, keep], new_cond, dropped, _kept_index(keep, cond)
 
 
+def _apply_limb_drop(motion, cond, translation_root_index, target, rng):
+    dropped = sample_limb_drop(cond, _indexed_joints(cond, translation_root_index), rng=rng)
+    if not dropped:
+        return None
+    keep, new_cond = drop_joints_from_cond(cond, dropped)
+    return motion[:, keep], new_cond, dropped, _kept_index(keep, cond)
+
+
 def _apply_merge(motion, cond, translation_root_index, target, rng):
     joint_count = int(np.asarray(cond['parents']).shape[0])
     if joint_count <= LEAF_DROP_MIN_KEPT_JOINTS:
@@ -230,6 +245,7 @@ def _kept_index(keep, cond):
 _TOPOLOGY_AUGS = {
     'leaf_drop': _apply_leaf_drop,
     'merge': _apply_merge,
+    'limb_drop': _apply_limb_drop,
 }
 TOPOLOGY_AUG_KINDS = tuple(_TOPOLOGY_AUGS)
 
@@ -238,9 +254,10 @@ def augment_topology(motion, cond, translation_root_index, *,
                      kinds=TOPOLOGY_AUG_KINDS, rng=random):
     """Return ``(physical motion, private cond, diagnostics)``; a skip is a no-op.
 
-    One of ``kinds`` -- leaf drop (``leaf_drop.py``) or chain merge -- is
-    drawn uniformly; when the rig offers it nothing, the other follows. A
-    merge applies a uniform number of units in
+    One of ``kinds`` -- leaf drop, limb drop or chain merge -- is
+    drawn uniformly; when the rig offers it nothing, the remaining kinds are
+    tried in random order. Limb drop removes at most one whole chain and its
+    mirror. A merge applies a uniform number of units in
     ``[TOPOLOGY_AUG_MIN_UNITS, TOPOLOGY_AUG_MAX_UNITS]``, never takes the rig
     below ``LEAF_DROP_MIN_KEPT_JOINTS`` and skips any unit whose merged bones
     fail the residual test, so fewer units may land. ``info['joints']`` are
@@ -259,5 +276,5 @@ def augment_topology(motion, cond, translation_root_index, *,
         info.update(applied=True, kind=kind, joints=[int(j) for j in joints], new_index=new_index,
                     translation_root_index=int(new_index[int(translation_root_index)]))
         return out, new_cond, info
-    info['skip_reason'] = 'no leaf to drop or joint to merge'
+    info['skip_reason'] = 'no eligible topology edit'
     return motion, cond, info

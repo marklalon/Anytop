@@ -10,6 +10,7 @@ probability 100%; other augmentations are disabled:
   motion-speed  — time scaling with range --motion-speed-aug (default: 1.3,
                   matching train_all.bat; 1.0 disables random speed changes)
   leaf-drop     — remove eligible leaf joints and export the reduced skeleton
+  limb-drop     — remove one eligible whole chain and its mirror, if present
   chain-merge   — remove single-child joints whose merged bone stays straight
   bone-length   — symmetric body proportions, paired original/augmented BVHs
                   with actual scales in filenames and contact residuals in logs
@@ -49,7 +50,7 @@ Usage
 
 Arguments
 ---------
-  --mode              Required: loop / motion-speed / leaf-drop / chain-merge / bone-length /
+  --mode              Required: loop / motion-speed / leaf-drop / limb-drop / chain-merge / bone-length /
                       rest-repose / rest-variant (one only)
   --bone-length-aug-max  Max relative group-length change (default: 0.2 = +/-20%)
   --bone-length-aug-min  Min relative group-length change (default: 0.1 = +/-10%)
@@ -109,8 +110,8 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 
 # Preview mode -> the one topology_aug kind it pins, and its filename tag.
-_TOPOLOGY_MODES = {"leaf-drop": "leaf_drop", "chain-merge": "merge"}
-_TOPOLOGY_TAGS = {"leaf_drop": "drop", "merge": "merge"}
+_TOPOLOGY_MODES = {"leaf-drop": "leaf_drop", "chain-merge": "merge", "limb-drop": "limb_drop"}
+_TOPOLOGY_TAGS = {"leaf_drop": "drop", "merge": "merge", "limb_drop": "limb_drop"}
 
 
 # ---------------------------------------------------------------------------

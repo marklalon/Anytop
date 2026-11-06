@@ -27,7 +27,7 @@ def test_cli_rejects_missing_mixed_or_disabled_mode(monkeypatch, argv):
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("mode", ["loop", "motion-speed", "leaf-drop", "bone-length"])
+@pytest.mark.parametrize("mode", ["loop", "motion-speed", "leaf-drop", "limb-drop", "chain-merge", "bone-length"])
 def test_cli_accepts_one_mode(monkeypatch, mode):
     monkeypatch.setattr(sys, "argv", ["preview", "--mode", mode])
     assert parse_args().mode == mode

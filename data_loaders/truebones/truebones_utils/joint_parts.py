@@ -53,6 +53,21 @@ ALL_PART_LABELS = JOINT_PARTS + (HELPER_PART,)
 PART_SOURCES = ('name', 'inherit', 'geometry', 'manual')
 
 
+def joint_part_labels(entry) -> tuple[str, ...]:
+    """Source-rig semantics, carried unchanged through rest augmentations.
+
+    Dataset loading stores this tuple once. Standalone callers without stored
+    labels may still infer them from their source skeleton.
+    """
+    labels = entry.get('joint_parts')
+    if labels is not None:
+        if len(labels) != len(entry['parents']):
+            raise ValueError('joint_parts must have one label per joint.')
+        return tuple(labels)
+    proposal = prefill_joint_parts(entry)
+    return tuple(proposal[str(name)]['part'] for name in entry['joints_names'])
+
+
 def skeleton_entry(joint_names, parents, rest_positions, species_name=None) -> dict:
     """A cond-like entry for a rig outside every dataset (an external GLB/FBX),
     enough for :func:`prefill_joint_parts`. ``rest_positions`` are world
@@ -175,10 +190,8 @@ def prefill_limb_end_chains(cond_entry) -> tuple[list[list[int]], list[bool]]:
     ``cond_entry`` (every left/right hand, foot and wing, whether the T-pose
     reads it as standing or not), and whether each is a wing. A
     ``FLUTTERING_TAG`` species keeps its legs only."""
-    prefill = prefill_joint_parts(cond_entry)
-    names = cond_entry['joints_names']
-    parts = [prefill[str(name)]['part'] for name in names]
-    sides = list(cond_entry.get('joint_side_labels') or ['center'] * len(names))
+    parts = joint_part_labels(cond_entry)
+    sides = list(cond_entry.get('joint_side_labels') or ['center'] * len(parts))
     chains = limb_end_chains(cond_entry['parents'], parts, sides)
     is_wing = [parts[chain[0]] == 'wing' for chain in chains]
     if FLUTTERING_TAG in (cond_entry.get('species_tags') or ()):
