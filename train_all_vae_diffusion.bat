@@ -7,7 +7,7 @@ set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
 set "AE_RUN_NAME=all_autoencoder_v2"
-set "DIFFUSION_RUN_NAME=all_latent_diffusion_v2"
+set "DIFFUSION_RUN_NAME=all_latent_diffusion_v4"
 set "TRAIN_STAGE=both"
 set "RUN_NAME_COUNT=0"
 :parse_args
@@ -100,9 +100,9 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --amp_dtype fp16 ^
     --heads 4 ^
     --slots 8 ^
+    --latent_dim 32 ^
     --variational ^
     --kl_weight 3e-4 ^
-    --latent_dim 32 ^
     --num_frames 60 ^
     --batch_size 16 ^
     --motion_cache_size 16384 ^
@@ -112,7 +112,7 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --lr_final 5e-5 ^
     --lr_decay_start 0 ^
     --use_ema ^
-    --ema_rate 0.9995 ^
+    --ema_rate 0.999 ^
     --warmup_steps 2000 ^
     --drot_joint_boost 1 ^
     --lambda_dpos 0.1 ^
@@ -127,7 +127,7 @@ if "%TRAIN_STAGE%"=="autoencoder" (
     --lambda_loop_wrap 0.1 ^
     --num_steps 30000 ^
     --log_interval 100 ^
-    --save_interval 5000 ^
+    --save_interval 1000 ^
     --eval_interval 1000
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" goto :finish
@@ -151,9 +151,9 @@ if "%TRAIN_STAGE%"=="diffusion" (
     --auto_resume ^
     --seed 10 ^
     --num_frames 60 ^
-    --latent_mode mean ^
+    --latent_mode sample ^
     --stats_batches 64 ^
-    --width 384 ^
+    --width 512 ^
     --layers 8 ^
     --heads 4 ^
     --ff_size 2048 ^
@@ -180,15 +180,16 @@ if "%TRAIN_STAGE%"=="diffusion" (
     --main_process_prefetch_batches 64 ^
     --num_workers 2 ^
     --lr 1e-4 ^
-    --lr_final 3e-5 ^
+    --lr_final 1e-5 ^
     --lr_decay_start 0 ^
+    --lr_warmup_steps 500 ^
     --use_ema ^
-    --ema_rate 0.9995 ^
+    --ema_rate 0.999 ^
     --diffusion_steps 100 ^
     --noise_schedule cosine ^
     --num_steps 50000 ^
     --log_interval 100 ^
-    --save_interval 5000 ^
+    --save_interval 1000 ^
     --eval_interval 1000
 set "EXIT_CODE=%ERRORLEVEL%"
 :finish

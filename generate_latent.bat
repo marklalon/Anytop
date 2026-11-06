@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
-set "RUN_NAME=all_latent_diffusion_v1"
+set "RUN_NAME=tiny_latent_diffusion_fly_shake_v1"
 set "MODEL_FILE=latent_diffusion.pt"
 set "BATCH_SIZE=8"
 
