@@ -48,11 +48,10 @@ pushd "%SCRIPT_DIR%"
 	--lr 1e-4 ^
 	--lr_final 3e-5 ^
 	--lr_decay_start 0 ^
-	--weight_decay 0.03 ^
 	--use_ema ^
 	--ema_rate 0.9995 ^
-	--num_steps 300000 ^
-	--dropout_prob 0.1 ^
+	--num_steps 200000 ^
+	--dropout_prob 0.05 ^
     --action_label_cfg_drop_prob 0.15 ^
 	--joint_name_drop_prob 0.15 ^
 	--direction_slot_drop_prob 0.15 ^

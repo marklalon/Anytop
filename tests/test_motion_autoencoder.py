@@ -20,11 +20,11 @@ def test_cosine_schedule_resume_matches_uninterrupted_optimizer():
     from train.train_autoencoder import create_lr_scheduler, parser
     args = parser().parse_args([
         '--save_dir', 'unused', '--lr', '1e-4', '--lr_final', '5e-5',
-        '--lr_decay_start', '0', '--num_steps', '10', '--weight_decay', '.03',
+        '--lr_decay_start', '0', '--num_steps', '10',
         '--use_ema', '--ema_rate', '.995'])
     assert args.use_ema and args.ema_rate == .995
     parameter = torch.nn.Parameter(torch.ones(1))
-    optimizer = torch.optim.AdamW([parameter], lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW([parameter], lr=args.lr)
     scheduler = create_lr_scheduler(optimizer, args)
     rates = []
     for step in range(10):

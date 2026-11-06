@@ -5,7 +5,7 @@ REM Usage: train_tiny.bat [run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "RUN_NAME=zoo_locomotion_tiny_v74"
+set "RUN_NAME=tiny_diffusion_v1"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -62,11 +62,10 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --lr 1e-4 ^
     --lr_final 5e-5 ^
     --lr_decay_start 0 ^
-    --weight_decay 0.03 ^
     --use_ema ^
     --ema_rate 0.995 ^
-    --num_steps 20000 ^
-    --dropout_prob 0.1 ^
+    --num_steps 10000 ^
+	--dropout_prob 0.05 ^
     --action_label_cfg_drop_prob 0.15 ^
     --joint_name_drop_prob 0.15 ^
     --direction_slot_drop_prob 0.15 ^
