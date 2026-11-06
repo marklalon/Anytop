@@ -46,7 +46,6 @@ def test_validation_uses_independent_split_and_no_training_augmentation(monkeypa
     assert captured['action_conditioning'] is args.action_conditioning
     assert captured['species_table'] is args.species_descriptor_table
     assert captured['batch_transform'] is transform
-    assert not captured.get('ref_encoder', False)
 
 
 @pytest.mark.parametrize('raise_empty', [True, False])
@@ -164,7 +163,6 @@ def test_empty_validation_does_not_run_model(monkeypatch, loader):
     monkeypatch.setattr(vae, 'evaluate', unexpected)
     device = torch.device('cpu')
     assert vae.evaluate_validation(None, loader, 16, device) is None
-
 
 
 def test_vae_evaluates_all_val_batches_with_sample_weighting(monkeypatch):

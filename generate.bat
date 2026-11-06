@@ -5,22 +5,9 @@ set RUN_NAME=merged_all_v70
 
 rem set MODEL_FILE=model000020000.pt
 
-REM ----------------------------------------------------------------------
-REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
-REM   1) --object_type Horse only                          : random generation for Horse
-REM   2) --reference_motion path\Horse_Run.npy only      : infer "Horse" from filename; the reference is
-REM      encoded by the motion encoder (needs a --ref_encoder checkpoint), sampling starts from noise
-REM   3) --reference_motion path\Flamingo_Walk.npy --object_type Horse
-REM      : the Flamingo reference drives the Horse skeleton through the encoder, no retargeting
-REM   4) + --skip_timesteps / --inpaint_* / --outpaint : edit the reference on the target skeleton;
-REM      the reference must be the SAME rig as --object_type: a preprocessed .npy, or a .glb/.fbx whose own
-REM      bind pose is used as the rest pose.
-REM      --inpaint_frames also encodes the reference itself as z (inpainted frames hidden from the encoder),
-REM      so it refuses --action_label and ignores the --species_tags restyle; --inpaint_joints alone,
-REM      --skip_timesteps alone and --outpaint take both (with --outpaint + --inpaint_frames, they steer
-REM      only the pass that appends frames)
-REM   5) neither provided -> error and exit
-REM Supports zero-shot inference on object types not seen during training.
+REM Generate with --object_type and optional --action_label.
+REM --reference_motion requires --skip_timesteps / --inpaint_* / --outpaint.
+REM Editing uses the target's own rig; cross-skeleton transfer uses the motion autoencoder.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
 

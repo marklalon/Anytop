@@ -157,14 +157,6 @@ def test_training_keeps_the_cycle_count():
     assert cycles.tolist() == [2, 2, 2, 2]
 
 
-def test_reference_rows_read_one_cycle():
-    """A reference-active row bypasses the cycle count, like the label."""
-    model = _model()
-    y = _y(3, is_loop=torch.ones(3, dtype=torch.bool), loop_tile_count=torch.tensor([2, 2, 3]))
-    _, cycles = model._loop_condition(y, 3, CPU, ref_active=torch.tensor([True, False, True]))
-    assert cycles.tolist() == [1, 2, 1]
-
-
 def test_collate_carries_the_tile_count():
     from data_loaders.tensors import truebones_batch_collate
     # The collate reads the keys from the motion metadata.

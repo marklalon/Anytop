@@ -1,8 +1,7 @@
 @echo off
 setlocal EnableExtensions
-REM All-dataset locomotion reference-encoder experiment. Optional first argument: a NEW run name.
+REM All-dataset locomotion motion-diffusion training. Optional first argument: a NEW run name.
 REM Usage: train_tiny.bat [run_name]
-REM See docs/tiny_locomotion_baseline.md for the fixed ablation protocol.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
@@ -21,8 +20,8 @@ if not exist "dataset\cond_all.npy" (
     exit /b 1
 )
 
-REM A new run trains the reference encoder from scratch; auto_resume continues this run.
-REM Target and reference input draw topology and bone-length augmentation independently.
+REM A new run trains motion diffusion from scratch; auto_resume continues this run.
+REM Topology and bone-length augmentation apply to the training motion.
 REM Keep the full locomotion pool; no ordered sample_limit truncation.
 REM train_motion_diffusion forces bundled TinyCC for --compile and disables C++ codegen.
 REM reduce-overhead uses CUDA Graphs for eligible model forward/backward regions.
@@ -48,12 +47,6 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --action_adaln_bottleneck 64 ^
     --species_film_bottleneck 64 ^
     --species_cond ^
-    --ref_encoder ^
-    --ref_slots 2 ^
-    --ref_dim 8 ^
-    --ref_width 128 ^
-    --ref_layers 2 ^
-    --ref_cfg_drop_prob 0.6 ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
     --topology_aug_prob 0.2 ^

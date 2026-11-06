@@ -288,7 +288,6 @@ class TrainLoop:
                 shuffle=False,
                 drop_last=False,
                 action_label_cond=getattr(self.args, 'action_label_cond', False),
-                ref_encoder=getattr(self.args, 'ref_encoder', False),
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
                 species_table=getattr(self.args, 'species_descriptor_table', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
@@ -534,7 +533,6 @@ class TrainLoop:
         return batch.to(self.device, non_blocking=self.non_blocking)
 
 
-
     # Read only by the host-side joint-mask sampler (MotionDiffusion.sample_subtree_joint_mask_train):
     # moving it to the device just to read it back cost a stream sync per step.
     HOST_ONLY_COND_KEYS = ('joint_mask_limb_roots',)
@@ -687,24 +685,14 @@ class TrainLoop:
         and unweighted (the caller draws ``t`` stratified-uniform, which needs
         no importance weights).
         """
-        ref_enabled = bool(getattr(unwrap_motion_diffusion_model(model), 'ref_encoder', False))
-        null_cond = cond
-        if ref_enabled:
-            null_cond = dict(cond, y=dict(cond['y'], ref_active=torch.zeros(
-                batch.shape[0], dtype=torch.bool, device=batch.device)))
         with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
                 model,
                 batch,
                 t,
-                model_kwargs=self._with_train_step(null_cond, self.total_step()),
+                model_kwargs=self._with_train_step(cond, self.total_step()),
                 noise=noise,
             )
-            if ref_enabled:
-                ref_losses = self.diffusion.training_losses(
-                    model, batch, t, model_kwargs=self._with_train_step(cond, self.total_step()), noise=noise)
-                losses.update({'reference_' + key: value for key, value in ref_losses.items()
-                               if key not in self.TRAIN_ONLY_LOSS_KEYS})
         # part_loss covers only joints whose name was dropped, and eval drops none.
         return {
             key: value.detach().float().mean()
@@ -1208,8 +1196,6 @@ class TrainLoop:
         return pjoin(self.args.save_dir, models[max(models)]) if models else None
 
 
-
-
     def _get_checkpoint_step_numbering(self, checkpoint_path: str) -> str:
         args_path = pjoin(os.path.dirname(checkpoint_path), 'args.json')
         if not os.path.exists(args_path):
@@ -1241,5 +1227,3 @@ def get_blob_logdir():
     # You can change this to be a separate path to save checkpoints to
     # a blobstore or some external drive.
     return logger.get_dir()
-            
-

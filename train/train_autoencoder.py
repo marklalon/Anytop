@@ -463,7 +463,7 @@ def main():
                           motion_cache_size=args.motion_cache_size,
                           loop_tile_single_prob=1.0, motion_speed_aug=1.0,
                           topology_aug_prob=0.0, bone_length_aug_prob=0.0,
-                          rest_repose_prob=0.0, rest_variant_prob=0.0, ref_encoder=False)
+                          rest_repose_prob=0.0, rest_variant_prob=0.0)
     source = dataset.motion_dataset
     names = list(source.name_list)
     if resume is not None:

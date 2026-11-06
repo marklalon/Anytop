@@ -62,34 +62,7 @@ def _zero_init_mlp(width):
 
 
 class MotionConditioningMixin:
-    """Shared action slots, reference priority and physical-time semantics."""
-    def _reference_condition(self, y, batch_size, frames, device):
-        if self.reference_encoder is None:
-            return None, None
-        active = torch.as_tensor(y['ref_active'], device=device, dtype=torch.bool).reshape(-1)
-        if active.numel() != batch_size:
-            raise ValueError('ref_active must have shape [B]')
-        active = active & y['ref_mask'].to(device).any(-1)
-        ref_y = {k: v.to(device) for k, v in y.items() if k.startswith('ref_') and torch.is_tensor(v)}
-        if ref_y['ref_feats'].shape[-1] != frames:
-            raise ValueError('Reference and output windows must be frame aligned')
-        if not self.training or self.ref_cfg_drop_prob == 0:
-            return self.reference_encoder(ref_y), active
-        # Reference dropout keeps a fixed number of randomly chosen rows per
-        # batch, so the encoder runs on those rows only (static shape for
-        # compile); a dropped row is hard-bypassed and its z is never read.
-        keep = batch_size - round(batch_size * self.ref_cfg_drop_prob)
-        encoder = self.reference_encoder
-        if keep == 0:
-            z = ref_y['ref_feats'].new_zeros(batch_size, frames, encoder.slots, encoder.ref_dim)
-            return z, torch.zeros_like(active)
-        rows = torch.randperm(batch_size, device=device)[:keep]
-        z = encoder({k: v[rows] for k, v in ref_y.items()})
-        z = z.new_zeros((batch_size,) + z.shape[1:]).index_copy(0, rows, z)
-        kept = torch.zeros_like(active).index_fill(0, rows, True)
-        return z, active & kept
-
-
+    """Shared action slots and physical-time semantics."""
     def _coerce_resample_speed_cond(self, raw_resample_speed_cond, batch_size, device, dtype):
         if raw_resample_speed_cond is None:
             raw_resample_speed_cond = torch.ones(batch_size, device=device, dtype=dtype)
@@ -128,16 +101,10 @@ class MotionConditioningMixin:
         return value
 
 
-    def _loop_condition(self, y, batch_size, device, ref_active=None):
+    def _loop_condition(self, y, batch_size, device):
         """``(is_loop, cycles)``, each ``[B]``.
 
-        ``cycles`` is the loop window's cycle count k, from
-        y['loop_tile_count'] (the loader's tile count, 1 when absent), and
-        reads 1 on an open row and on a reference-active one (``ref_active``),
-        so it can feed the period of the circular table directly. A reference
-        supplies the motion, its cycles included, so like the action label and
-        the species FiLM the count is bypassed there, in training and at
-        inference alike: its table and tempo take the window as one cycle.
+        ``cycles`` is the window cycle count on loop rows and 1 on open rows.
         Branch-free on tensor values (compile).
         """
         raw_loop = y.get('is_loop')
@@ -152,8 +119,7 @@ class MotionConditioningMixin:
             cycles = self._per_sample(
                 raw_cycles, batch_size, device, torch.long, 'loop_tile_count',
             ).clamp(min=1)
-        counted = is_loop if ref_active is None else is_loop & ~ref_active
-        cycles = torch.where(counted, cycles, torch.ones_like(cycles))
+        cycles = torch.where(is_loop, cycles, torch.ones_like(cycles))
         return is_loop, cycles
 
 
@@ -177,8 +143,7 @@ class MotionConditioningMixin:
 
         An open window: each frame's physical time, frame ``i`` at source frame
         ``i * (L - 1) / (T - 1)``. A loop window: the physical length of one
-        cycle, ``L / k``, the same at every frame (``cycles`` is 1 on a
-        reference-active row, so that row reads ``L``) -- frame positions inside
+        cycle, ``L / k``, the same at every frame -- frame positions inside
         the cycle are the circular table's job, and a ramp would jump at the
         seam. ``L = resample_speed_cond * T``. Training and inference always
         keep tempo. ``is_loop`` / ``cycles`` default to
@@ -519,7 +484,7 @@ class MotionConditioningMixin:
         return word_mask.any(dim=-1)
 
 
-    def _action_condition(self, y, batch_size, device, dtype, ref_active=None):
+    def _action_condition(self, y, batch_size, device, dtype):
         """``(channels [B, S*D], active [B])`` for the action condition, or ``None``.
 
         ``active`` folds together the CFG hard-drop mask and "does this row carry
@@ -554,18 +519,14 @@ class MotionConditioningMixin:
         active = active & self._resolve_action_label_valid(
             y, batch_size, device, word_mask
         )
-        # A reference supplies the motion content, so the action label is
-        # bypassed on every reference-active row, in training and at inference.
-        if ref_active is not None:
-            active = active & ~ref_active
         return channels, active
 
 
-    def _build_action_label_token(self, y, batch_size, device, dtype, ref_active=None):
+    def _build_action_label_token(self, y, batch_size, device, dtype):
         """The action token added to the timestep embedding, or ``None`` when off."""
         if self.action_label_projection is None:
             return None
-        resolved = self._action_condition(y, batch_size, device, dtype, ref_active)
+        resolved = self._action_condition(y, batch_size, device, dtype)
         if resolved is None:
             return None
         channels, action_active = resolved

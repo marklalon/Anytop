@@ -31,7 +31,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 57
+CKPT_VERSION = 58
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -203,14 +203,6 @@ def add_base_options(parser):
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')
-    group.add_argument('--ref_encoder', action='store_true', help='Train a frame-aligned reference motion encoder.')
-    group.add_argument('--ref_slots', type=int, default=2)
-    group.add_argument('--ref_dim', type=int, default=8)
-    group.add_argument('--ref_width', type=int, default=64)
-    group.add_argument('--ref_layers', type=int, default=2)
-    group.add_argument('--ref_cfg_drop_prob', type=float, default=0.4,
-                       help='Reference hard-drop probability. Reference-active rows always '
-                            'bypass the action label and the species condition.')
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
@@ -391,8 +383,7 @@ def add_model_options(parser):
     group.add_argument("--species_cond", action='store_true',
                        help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
                             "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
-                            "identity. Applied on every row without an active reference and "
-                            "bypassed on every reference-active row; it has no CFG drop.")
+                            "identity. Applied on every row; it has no CFG drop.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the clip's action_label ('run, forward, "
                             "left, glide' -- controlled keywords, not prose) is split into words, pooled "
@@ -655,15 +646,6 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument('--reference_source_type', default='', help='Source cond species for an encoded NPY --reference_motion.')
-    group.add_argument('--reference_action_group', default=None, choices=ACTION_GROUPS,
-                       help="Action group of a raw .fbx/.glb/.gltf --reference_motion. Only 'locomotion' "
-                            "changes its encoding: the root-travel detrend and extent bound, as in dataset "
-                            "preprocessing. Default: decided from the file name (e.g. 'Run01Forwards' is "
-                            "locomotion, 'FlyAttack' is not).")
-    group.add_argument('--ref_cfg_scale', type=float, default=1.0,
-                       help='Reference CFG scale on the high-noise half of the steps, where global '
-                            'posture (facing, body height) is decided; the detail steps use 1.')
     group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. Omit it to let "
                             "generation pick one, in this priority order: --reference_motion's "
@@ -703,15 +685,9 @@ def add_generate_options(parser):
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
     group.add_argument("--reference_motion", default=None, type=str,
-                       help="Path to a reference motion .npy/.fbx/.glb/.gltf file. Non-NPY inputs are "
-                           "preprocessed into the same 12-channel feature-space NPY used by training, then "
-                           "then either ENCODED (default; the reference may be another species, the sample "
-                           "starts from noise and needs a --ref_encoder checkpoint) or EDITED (with "
-                           "--skip_timesteps / --inpaint_* / --outpaint: noised or clamped on the target "
-                           "skeleton, so the reference must be the same rig: a preprocessed .npy, or a .glb/.fbx whose own bind pose is its rest pose). If --object_type is "
-                           "not given, it is inferred from the reference filename. When filename inference "
-                           "is invalid, the target object_type is used as a fallback. "
-                            "Omit for pure random generation.")
+                       help="Same-rig motion .npy/.fbx/.glb/.gltf used only for img2img, inpaint or "
+                            "outpaint editing. Requires --skip_timesteps, --inpaint_* or --outpaint. "
+                            "Cross-skeleton motion transfer is handled by the motion autoencoder.")
     group.add_argument("--skip_timesteps", default=None, type=int,
                        help="Number of timesteps to skip when using --reference_motion (img2img). Higher = more faithful to reference. "
                            "Range: 0~sampling_steps. Default: required when using --reference_motion without --inpaint_*; "
@@ -786,9 +762,7 @@ def add_generate_options(parser):
                             "you restyle the generated motion (e.g. make a Winged Dragon move as a "
                             "Quadruped, or a human walk like a machine). "
                             "Requires a checkpoint trained with --species_cond. "
-                            "Incompatible with --object_type all. The restyle is ignored wherever "
-                            "the reference itself drives the motion and the species descriptor is "
-                            "bypassed: an encoded --reference_motion, and the --inpaint_frames pass. "
+                            "Incompatible with --object_type all. "
                             "Editing a raw .glb/.fbx of a species the checkpoint does not know "
                             "still reads the tags, as that skeleton's own descriptor.")
 
@@ -801,9 +775,9 @@ def train_args():
     return parser.parse_args()
 
 
-def is_encoded_reference(reference_motion, skip_timesteps=None, inpaint_joints='',
-                         inpaint_frames='', outpaint=False):
-    """True when the reference is encoded as motion content rather than edited."""
+def reference_requires_edit_options(reference_motion, skip_timesteps=None, inpaint_joints='',
+                                    inpaint_frames='', outpaint=False):
+    """True when an edit source is given without any editing options."""
     return bool(reference_motion) and (skip_timesteps is None and not outpaint
                                        and not str(inpaint_joints or '').strip()
                                        and not str(inpaint_frames or '').strip())
@@ -819,16 +793,15 @@ def generate_args(argv=None):
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
     # Checkpoint action_group is training metadata and is not restored for generation.
-    preserve_cli_args = {'action_label', 'species_tags', 'reference_action_group'}
+    preserve_cli_args = {'action_label', 'species_tags'}
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,
     )
-    encoded_reference = is_encoded_reference(args.reference_motion, args.skip_timesteps,
-                                             args.inpaint_joints, args.inpaint_frames, args.outpaint)
-    if encoded_reference and str(args.action_label or '').strip():
-        parser.error('an encoded --reference_motion cannot be combined with --action_label; '
-                     'the reference supplies the motion content')
+    if reference_requires_edit_options(args.reference_motion, args.skip_timesteps,
+                                       args.inpaint_joints, args.inpaint_frames, args.outpaint):
+        parser.error('--reference_motion requires --skip_timesteps, --inpaint_* or --outpaint; '
+                     'use the motion autoencoder for cross-skeleton transfer')
     return args
 
 def process_new_skeleton_args():
@@ -880,4 +853,3 @@ def process_new_skeleton_args():
                             "cond.npy, canonical frame and units).")
     args = parser.parse_args()
     return args
-

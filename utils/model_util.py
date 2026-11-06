@@ -75,11 +75,6 @@ _DROPPED_STATE_DICT_PREFIXES = ('joint_part_head.',)
 
 def load_model(model, state_dict):
     state_dict = {k: v for k, v in state_dict.items() if not k.startswith(_DROPPED_STATE_DICT_PREFIXES)}
-    # Reference encoder was previously registered as motion_encoder.
-    state_dict = {
-        ('reference_encoder.' + k[len('motion_encoder.'):] if k.startswith('motion_encoder.') else k): v
-        for k, v in state_dict.items()
-    }
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     # QK-norm params (added to bound attention logits) are absent from older
@@ -247,10 +242,6 @@ def get_gmdm_args(args):
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             'rest_geom_joint_drop_prob': getattr(args, 'rest_geom_joint_drop_prob', 0.1),
-            **{key: getattr(args, key, default) for key, default in (
-                ('ref_encoder', False), ('ref_slots', 2), ('ref_dim', 8),
-                ('ref_width', 64), ('ref_layers', 2),
-                ('ref_cfg_drop_prob', 0.4))},
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'direction_slot_drop_prob': getattr(args, 'direction_slot_drop_prob', 0.0),

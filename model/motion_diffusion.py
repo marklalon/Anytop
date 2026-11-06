@@ -73,8 +73,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.unreliable_mask_drop_prob=float(kargs.get('unreliable_mask_drop_prob', 0.0))
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
-        # It is on exactly on the rows without an active reference, so it has
-        # no CFG drop and no null mode of its own.
+        # It is applied on every row, with no CFG drop or null mode of its own.
         self.species_cond=bool(kargs.get('species_cond', False))
         # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
@@ -234,33 +233,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.output_process = OutputProcess(
             self.feature_len, self.input_feats, self.max_joints, self.latent_dim
         )
-        self.ref_encoder = bool(kargs.get('ref_encoder', False))
-        self.ref_cfg_drop_prob = float(kargs.get('ref_cfg_drop_prob', 0.4))
-        if not 0 <= self.ref_cfg_drop_prob <= 1:
-            raise ValueError('ref_cfg_drop_prob must be in [0, 1]')
-        self.reference_encoder = None
-        if self.ref_encoder:
-            from model.reference_encoder import ReferenceEncoder
-            ref_dim = int(kargs.get('ref_dim', 8))
-            ref_width = int(kargs.get('ref_width', 64))
-            if ref_width >= self.latent_dim:
-                raise ValueError('ref_width must be smaller than the shared decoder latent_dim')
-            self.reference_encoder = ReferenceEncoder(
-                t5_out_dim, slots=int(kargs.get('ref_slots', 2)), ref_dim=ref_dim,
-                width=ref_width, layers=int(kargs.get('ref_layers', 2)),
-                dropout=self.dropout,
-            )
-            for layer in self.seqTransDecoder.layers:
-                layer.enable_reference(ref_dim)
-
-    def reference_parameter_budget(self):
-        encoder = sum(p.numel() for p in self.reference_encoder.parameters()) if self.reference_encoder else 0
-        branches = sum(p.numel() for n, p in self.seqTransDecoder.named_parameters()
-                       if '.ref_' in n)
-        total = sum(p.numel() for p in self.parameters())
-        return dict(total=total, shared=total - encoder - branches,
-                    reference_encoder=encoder, reference_branches=branches)
-
 
     @staticmethod
     def _prepare_unreliable_mask(raw_mask, bs, nframes, njoints, device, dtype):
@@ -496,7 +468,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         rest_geom = y['rest_geom'].to(x.device)
 
         bs, njoints, nfeats, nframes = x.shape
-        ref_z, ref_active = self._reference_condition(y, bs, nframes, x.device)
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         # joint-mask subtree perturbation is applied OUTSIDE this
@@ -508,18 +479,12 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         # cross-joint pathway to denoise robustly against per-joint timestep
         # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
-        action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype, ref_active)
+        action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
         if action_label_token is not None:
             timesteps_emb = timesteps_emb + action_label_token
 
         species_code = (
             self._coerce_species_code(y, bs, x.device, x.dtype) if self.species_cond else None
-        )
-        # A reference supplies the motion content, so the target species FiLM is
-        # bypassed on every reference-active row and applied on every other row,
-        # in training and at inference alike.
-        species_active = (
-            ~ref_active if self.species_cond and ref_active is not None else None
         )
         # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
         # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
@@ -538,11 +503,11 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
             )
         joint_name_drop = self._sample_joint_name_drop(bs, njoints, x.device)
         rest_geom_drop = self._sample_rest_geom_drop(bs, njoints, x.device)
-        is_loop, loop_cycles = self._loop_condition(y, bs, x.device, ref_active)
+        is_loop, loop_cycles = self._loop_condition(y, bs, x.device)
         x = self.input_process(x, rest_geom, y['joints_names_embs'], joint_valid, y['joint_struct'],
                                joint_name_drop=joint_name_drop, rest_geom_drop=rest_geom_drop,
                                species_code=species_code,
-                               species_active=species_active,
+
                                frame_pos_emb=self._frame_position_embedding(
                                    nframes, is_loop, loop_cycles, x.device,
                                )) # applies linear layer on each frame to convert it to latent dim
@@ -579,8 +544,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
             # Same token the additive path summed in above, so a CFG-dropped row
             # modulates by the null embedding rather than skipping the head.
             action_adaln_cond=action_label_token if self.action_label_adaln else None,
-            ref_z=ref_z,
-            ref_active=ref_active,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output
@@ -661,7 +624,7 @@ class InputProcess(nn.Module):
 
     def forward(self, x, rest_geom, joints_embedded_names, joint_valid=None,
                 joint_struct=None, joint_name_drop=None, rest_geom_drop=None,
-                species_code=None, species_active=None, frame_pos_emb=None):
+                species_code=None, frame_pos_emb=None):
         """Embed every (frame, joint) with its static per-joint channels.
 
         ``rest_geom`` is ``[B, J, REST_GEOM_DIM]`` (y['rest_geom']).
@@ -672,8 +635,7 @@ class InputProcess(nn.Module):
         present flag included.
 
         ``species_code`` ([B, species_code_dim]) drives the species FiLM and is
-        required exactly when it exists; a row whose ``species_active`` is False
-        bypasses the FiLM entirely.
+        required exactly when it exists; FiLM is applied on every row.
 
         ``frame_pos_emb`` ([T, B, D], MotionDiffusion._frame_position_embedding) is the
         frame-position signal; None adds the absolute frame PE to every sample.
@@ -683,7 +645,7 @@ class InputProcess(nn.Module):
         x = self.joint_embedding(x[..., :len(MODEL_CHANNELS)])
         names, geometry = self.static_components(
             rest_geom, joints_embedded_names, x.device, x.dtype, joint_valid,
-            joint_struct, joint_name_drop, rest_geom_drop, species_code, species_active)
+            joint_struct, joint_name_drop, rest_geom_drop, species_code)
         x = x + names[None]
         x = x + geometry[None]
         # fp32 on purpose: this add promotes the bf16 residual stream back to
@@ -696,7 +658,7 @@ class InputProcess(nn.Module):
 
     def static_components(self, rest_geom, joints_embedded_names, device, dtype,
                           joint_valid=None, joint_struct=None, joint_name_drop=None,
-                          rest_geom_drop=None, species_code=None, species_active=None):
+                          rest_geom_drop=None, species_code=None):
         """Shared static skeleton channels, without motion or frame positions."""
         joints_clean = joints_embedded_names.to(device)
         if joint_valid is None:
@@ -727,11 +689,6 @@ class InputProcess(nn.Module):
                 self.species_film_j, torch.cat([joints_embedded_names, species_broadcast], dim=-1)
             ).chunk(2, dim=-1)
             modulated = (1.0 + gamma_residual) * joints_embedded_names + beta
-            # Drop the entire modulation, including its joint-dependent component.
-            # Zeroing only the species input would leave a learned conditional path.
-            if species_active is not None:
-                active = species_active.to(device=device, dtype=torch.bool).view(-1, 1, 1)
-                modulated = torch.where(active, modulated, joints_embedded_names)
             joints_embedded_names = modulated
         elif species_code is not None:
             raise ValueError("species_code was passed but this InputProcess has no species FiLM.")

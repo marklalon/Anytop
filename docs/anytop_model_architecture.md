@@ -1,7 +1,7 @@
 # AnyTop 模型架构
 
 本文档描述 AnyTop 的模型结构：输入特征、条件总线、decoder、训练扰动与损失，以及参考动作在
-采样侧与可选编码器中的使用方式。层数、宽度、各种概率和损失权重由训练配置决定；正文以结构与数据流为主，
+采样侧的编辑使用方式。层数、宽度、各种概率和损失权重由训练配置决定；正文以结构与数据流为主，
 参考配置的参数预算见 §11。实现细节以代码为准。
 
 ## 速览
@@ -32,19 +32,14 @@ diffusion timestep
   + action-label condition
 ```
 
-`--reference_motion` 有两种用法，由是否带 `--skip_timesteps` / `--inpaint_*` / `--outpaint` 区分。
-带这些参数时是编辑，参考只在采样器侧用于：
+`--reference_motion` 仅用于编辑，必须搭配 `--skip_timesteps` / `--inpaint_*` / `--outpaint`。
+动作只在采样器侧用于：
 
 - `skip_timesteps` 的 img2img 初始化；
 - 每步 clamp 已知区域的 inpainting；
 - clamp 已有帧、生成新增帧的 outpainting。
 
 编辑在目标骨架上进行，参考必须是目标同一套骨架：已预处理的 `.npy`，或以文件自带 bind pose 为 rest pose 的 `.glb/.fbx`（骨架层级与目标不一致时报错），不做 retarget。
-
-不带这些参数时是 encode；训练时启用 `--ref_encoder` 后可用：参考在源骨架上进入独立的
-ReferenceEncoder，逐帧输出固定数量的槽。每层 spatial 之后读取这些槽，经独立的零初始化标量
-gate 加入残差；不设参考专用 FFN。无参考时硬旁路，完整设计与验证边界见
-[reference_encoder.md](reference_encoder.md)。
 
 基础训练目标是 `MSE(predicted_x0, target_x0)`，不是噪声预测。temporal attention 是全窗口
 注意力；loop 使用条件 token、圆周相位、数据增强与闭合损失，不使用 temporal mask。
@@ -63,14 +58,13 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 - Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
 - loop 条件、圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
-- per-joint species × joint FiLM（无参考的行开启，参考生效的行 bypass）；
+- per-joint species × joint FiLM（所有行开启）；
 - 按角色分槽的 action-label 条件与 action CFG；
 - resample-speed 条件（输出坐标/标准化空间全语料统一，不作为模型输入）；
 - subtree / temporal-span 混合噪声训练；
 - full temporal attention、QK-Norm 和细分的拓扑关系码。
 
-参考支持采样器编辑路径与编码器条件路径。前者用于 img2img、inpainting、outpainting；后者
-通过独立参考分支影响共享 decoder（见第 9 节）。
+
 
 ## 2. 总体数据流
 
@@ -160,7 +154,7 @@ timestep
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 参考生效的行 bypass 到 identity；无随机 drop |
+| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 所有行开启；无随机 drop |
 
 Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
 `species_code = [T5(body plan) || variant 轴]`（`species_descriptor_table.species_code`）；
@@ -179,8 +173,7 @@ modulated_name = (1 + gamma_residual) * joint_name_emb + beta
 隐藏宽度由 `species_film_bottleneck` 控制，设为 0 时使用 `latent_dim`。
 最后一层权重和偏置初始化为零，因此初始调制为 identity。
 
-FiLM 在每个没有生效参考的行上开启；参考生效的行所有关节绕过整条 FiLM，直接将关节名
-embedding 送入 `text_embedding`。训练与推理相同，没有 species CFG drop，也没有 species CFG。
+FiLM 在所有行上开启，没有独立的 CFG drop 或 null 模式。
 
 `joint_name_drop_prob` 则按关节独立抽样，在 FiLM 之前把整条名字向量清零，FiLM 也读取
 清零后的名字。只丢名字时，FiLM 仍可从 `[0 || species_code]`
@@ -231,7 +224,7 @@ position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代�
 
 - open 窗口：**逐帧物理时间**，窗口第 `i` 帧对应源帧 `i · (L - 1) / (T - 1)`（与 loader 的 resample step 一致），
   经 sinusoidal embedding 和 `tempo_projection` 加到该帧所有关节的 token 上；
-- loop 窗口：**一个周期的物理长度** `L / k`（参考动作激活的行 k 读作 1），每帧相同，经独立的
+- loop 窗口：**一个周期的物理长度** `L / k`，每帧相同，经独立的
   `loop_period_projection`。帧在周期内的位置由 §6.1 的循环表给出；斜坡会在接缝处跳回 0。
   两种行用不同的头，是因为同一个输入值在 open 行是帧时间、在 loop 行是周期长度。
 
@@ -250,13 +243,12 @@ position 回到 RIC，速度行写入根的世界步长（读存储 clip 的代�
 ```text
 x + embedded timestep/conditions
   → Graph Spatial Attention + residual + norm
-  → [ref cross-attn（仅 --ref_encoder，见 §9）]
   → [action AdaLN on the branch input] → Full Temporal Attention + residual + norm
   → Cross-Limb Block（若本层启用）
   → [action AdaLN on the branch input] → FFN + residual + norm
 ```
 
-方括号里的 AdaLN 只在 `--action_label_cond` 下存在（见 §4.2）；ref cross-attn 只在 `--ref_encoder` 下存在。
+方括号里的 AdaLN 只在 `--action_label_cond` 下存在（见 §4.2）。
 
 该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
 基类的 `self_attn` 换成 graph/temporal 两条路径，`multihead_attn` 已删除。
@@ -352,17 +344,7 @@ Loop 不是单一布尔 token，而是模型、数据和损失共同组成的一
   一个闭合窗口是时间拓扑的陈述，phase table 是唯一能表达它的地方；
 - 窗口的周期数 `k = y['loop_tile_count']`（loader 的 tile 数；loop clip 只在整条长度上闭合，
   所以一份 tile 就是一个周期），推理由 `--loop_cycles` 给出；open 行不读 k；
-  参考动作激活的行（`ref_active`）在训练和推理里都把 k 读作 1，周期由参考动作自身决定，
-  与 action label、species FiLM 在这些行被绕过相同。k 没有自己的 token，只作为下面循环表和
-  loop tempo 的周期进入模型；
-- loop 样本**不加** absolute PE，输入层改加周期为 `T / k` 的 circular table
-  （`circular_phase_embedding(cycles=k)`，相位 `2π·f·k·i/T`），这是它唯一的帧位置信号。
-  k 份 tile 各占 `T / k` 帧，k 整除 T 时各份编码逐位相同；k 与 T 互素时，表是 k=1 表的行置换。
-  相位在整数上对 T 取模后再算三角函数，所以闭合是精确的；
-- 每层在 temporal attention 前再加一次同一张表，乘以 learned scalar `temporal_phase_scale`（0 初始化）；
-- cross-limb latents 通过 cross-in 继承关节 token 里的帧 PE（§5.3），没有自己的时间表；
-- circular table 在窗口的第一个和最后一个动作帧闭合：最后一帧是第 0 帧的前一步，周期取 `T / k`
-  而不是 `(T - 1) / k`。
+
 
 推理端 k 与长度的解析规则
 （`sample/output_lengths.resolve_loop_cycles`）见 `docs/loop_cycle_condition.md` §4。
@@ -456,22 +438,7 @@ timestep 是一个混合分布（`--renoise_same_level_prob`）：取默认值�
 
 因此这些编辑能力不增加 AnyTop forward 的参数量。
 
-不带编辑参数的 `--reference_motion`（encode）要求以 `--ref_encoder` 从头训练的 checkpoint。它不经过
-retarget，也不使用 img2img 初始化或 clamp：参考在自己的骨架上提取干净特征，经独立的、
-比主干窄的 spatial/temporal encoder 和每帧 learned-query 池化，得到 `[B,T,K,d_z]`。
-编码器只读与源骨架 rest 无关的量：每个关节在骨架规范化静止朝向系下的父→子单位骨骼方向与
-绝对高度 / L（`ref_pose`）、translation root 的世界 XZ、关节名和 structural channel 的拓扑列；
-不读 rest token、残差 position、局部 rotation，也不读取 species descriptor。
-目标 decoder 仍保留自己的骨架条件；参考生效的行 per-joint species FiLM 一律 bypass。
-
-参考模型的层内顺序为 `spatial → ref cross-attn → temporal → cross-limb → FFN`。
-参考分支不调制 rest token；残差按 `ref_active` 屏蔽，含 bias。训练只增强编码器副本；
-`ref_cfg_drop_prob` 独立于 action dropout；被它丢掉参考的行开启 species FiLM。验证保留原 `Val/l_simple` 为 ref-null，
-另记 `Val/reference_l_simple`，两者使用相同目标、timestep 和 noise。
-
-encode 的 CFG 顺序计算无参考无文字、参考无文字、参考加文字（有 label 才计算第三次），
-无参考分支开启目标骨架自身的 species FiLM，参考分支 bypass。
-该路径不嵌套 action CFG，也不接受 skip/inpaint/outpaint 参数。
+跨骨架参考动作迁移由 [motion autoencoder](motion_autoencoder.md) 承担。扩散模型不编码参考动作，动作标签、species FiLM 与 loop 周期条件始终遵循各自的常规规则。
 
 **窗口到输出长度。** 模型总是生成固定的内部窗口，再换算成请求的 M 帧（`_resample_window_to_output`）。
 M 小于窗口时，窗口是 loader 会把 M 帧源动作放大成的样子，所以输出按最小二乘**反解**训练时的线性
@@ -493,8 +460,7 @@ M 大于窗口时插值不可逆，仍用线性插值。按帧范围 clamp 参�
 | refined topology codes | `data_loaders/truebones/truebones_utils/topology_relations.py` |
 | loop roll/tile/resample | `data_loaders/truebones/data/dataset.py` |
 | reference/inpainting/outpainting | `sample/generate.py` |
-| 源骨架参考编码器 | `model/reference_encoder.py` |
-| 编码器侧增强与固定字段 | `data_loaders/reference.py` |
+| 共享静态骨架几何 | `data_loaders/reference.py` |
 
 ## 11. 宽度分配与设计依据
 

@@ -219,23 +219,6 @@ def _wrap_action_label_cfg(model, args, action_condition):
     return ClassifierFreeActionModel(model, scale, args.diffusion_steps, switch_t=switch_t)
 
 
-def _wrap_reference_cfg(model, args, action_condition):
-    from model.cfg_sampler import ClassifierFreeReferenceModel
-    if not getattr(unwrap_motion_diffusion_model(model), 'ref_encoder', False):
-        raise ValueError('--reference_motion requires a checkpoint trained with --ref_encoder')
-    scale = getattr(args, 'ref_cfg_scale', 1.0)
-    # Scale 1 uses only the reference-conditioned pass, so it needs no trained
-    # null branch (single-clip overfit can keep the reference on every row).
-    if float(scale) != 1.0 and float(getattr(model, 'ref_cfg_drop_prob', 0.0)) <= 0:
-        raise ValueError('Reference CFG requires training with ref_cfg_drop_prob > 0')
-    if action_condition is not None:
-        raise ValueError('an encoded --reference_motion cannot be combined with --action_label')
-    return ClassifierFreeReferenceModel(
-        model, scale, num_timesteps=args.diffusion_steps,
-        switch_t=cfg_switch_timestep(args),
-    )
-
-
 def _coerce_loop_flag(flag):
     """One ``is_loop`` bool from a batch-level or per-species ``loop`` value.
 

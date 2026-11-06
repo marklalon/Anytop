@@ -102,7 +102,6 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 
 
-
 # The merged cond records each source's train/val assignment from datasets_all.jsonl.
 SUPPORTED_SPLITS = ("train", "val")
 ALL_SPLIT_NAME = "all"
@@ -790,7 +789,7 @@ def load_reference_groups(sources, data_dict) -> dict[str, tuple[str, ...]]:
     from the other members only. Group members outside this run's pool (a split, subset or
     action-group filter) are left out; a group left with one member is no
     group. Every member must have the same stored length and is_loop flag,
-    since the reference encoder reads the partner on the target's time axis.
+    since the autoencoder pair shares one temporal map.
     """
     by_namespace = {source.namespace: source for source in sources}
     parent: dict[str, str] = {}
@@ -1007,7 +1006,7 @@ class MotionDataset(data.Dataset):
         # (not on the clip), so it is constant across all samples of a species.
         # Precompute once at construction instead of rebuilding it inside the
         # per-sample hot path (_load_physical_motion). The target reads the
-        # REST_GEOM_COLUMNS slice; a reference on the stored rig reuses the full array.
+        # REST_GEOM_COLUMNS slice; the autoencoder uses the same geometry.
         self._rest_geometry_cache = {
             object_key: rest_geometry(entry)
             for object_key, entry in cond_dict.items()
@@ -1159,16 +1158,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        # Same-motion groups across rigs (REFERENCE_PAIRS_FILE): a grouped clip
-        # draws its encoder input uniformly from the other members of its group.
-        self.reference_groups = (
-            load_reference_groups(opt.sources, data_dict) if getattr(opt, 'ref_encoder', False) else {}
-        )
-        if self.reference_groups:
-            print(
-                f"[dataset] reference groups: {len(set(self.reference_groups.values()))} groups, "
-                f"{len(self.reference_groups)} clips"
-            )
         high_frequency_count = sum(bool(entry['high_frequency']) for entry in data_dict.values())
         print(
             f"[dataset] high-frequency clips (split {self.split}, cond {HIGH_FREQUENCY_COND_KEY}): "
@@ -1345,29 +1334,6 @@ class MotionDataset(data.Dataset):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_geom, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         cond = self.cond_dict[object_type]
         joint_struct = self._joint_struct_cache[object_type]
-        # The reference encoder's input draws its own skeleton augmentation, so
-        # it starts from the stored rig, not from the target's augmented one.
-        # A grouped clip draws that rig uniformly from the rest of its group,
-        # never itself: its self-reference is disabled.
-        ref_source = None
-        ref_partner = False
-        if getattr(self.opt, 'ref_encoder', False):
-            group = getattr(self, "reference_groups", {}).get(name)
-            partner = random.choice([member for member in group if member != name]) if group else name
-            if partner == name:
-                ref_source = (motion, cond, joint_struct, int(motion_metadata['translation_root_index']),
-                              self._rest_geometry_cache[object_type])
-            else:
-                partner_data = self.data_dict[partner]
-                partner_type = partner_data['object_type']
-                ref_source = (
-                    self._load_physical_motion(partner_data)[0],
-                    self.cond_dict[partner_type],
-                    self._joint_struct_cache[partner_type],
-                    int(partner_data['motion_metadata']['translation_root_index']),
-                    self._rest_geometry_cache[partner_type],
-                )
-                ref_partner = True
         # ── Rest variant (the species' hand-made rest poses; see rest_variants.py) ──
         # First skeleton stage: from here on the sample is the stored rig held in
         # another rest, and the stages below edit that rig. The structural
@@ -1426,15 +1392,6 @@ class MotionDataset(data.Dataset):
             if rest_repose_info['applied']:
                 rest_geom = rest_geometry(cond)[:, REST_GEOM_COLUMNS]
                 offsets = cond['offsets']
-        # The reference encoder's input draws its skeleton augmentation here too,
-        # on its whole stored clip, so it is grounded on the same clip as the target.
-        ref_skeleton_changed = False
-        if ref_source is not None:
-            from data_loaders.reference import augment_reference_skeleton
-            ref_clip, ref_cond, ref_joint_struct, ref_root_index, ref_geometry = ref_source
-            ref_clip, ref_cond, ref_shared, ref_skeleton_changed = augment_reference_skeleton(
-                ref_clip, ref_cond, dict(motion_metadata, translation_root_index=ref_root_index), self.opt,
-                shared=dict(joint_struct=ref_joint_struct, geometry=ref_geometry))
         # Preview can replay temporal draws on the original skeleton exactly.
         bone_length_rng_state = random.getstate() if return_aug_info else None
         if _temporal_plan is None:
@@ -1455,13 +1412,6 @@ class MotionDataset(data.Dataset):
             if is_loop:
                 motion = _drop_loop_closing_frame(motion)
                 m_length = int(motion.shape[0])
-            target_skeleton_changed = bool(rest_variant_info['applied'] or topology_info['applied']
-                                           or bone_length_info['applied'] or rest_repose_info['applied'])
-            ref_separate_rig = ref_partner or target_skeleton_changed or ref_skeleton_changed
-            if ref_source is not None and ref_separate_rig:
-                # The target's verdict, so both sides share one time axis below.
-                ref_motion = ref_clip[:m_length]
-
             # A high-frequency clip (high_frequency.py) is never resampled to fewer
             # frames, so its source budget is the window itself: the speed draw
             # only slows one that fits and never past the window, tiling stays within
@@ -1602,7 +1552,7 @@ class MotionDataset(data.Dataset):
             # Anchor each final window after every temporal operation, before
             # canonical standardization. Only the root carries world XZ; the
             # other joints are already RIC. Copy even on the identity path so
-            # cached source clips and the reference's source stay untouched.
+            # cached source clips stay untouched.
             clip = clip.copy()
             clip[:, 0, [0, 2]] -= clip[0, 0, [0, 2]]
             return clip
@@ -1612,19 +1562,6 @@ class MotionDataset(data.Dataset):
         motion = np.nan_to_num(
             physical_hml_to_canonical(motion, cond)
         ).astype(np.float32, copy=False)
-        reference = None
-        if ref_source is not None:
-            from data_loaders.reference import finish_reference_sample
-            if ref_separate_rig:
-                reference = finish_reference_sample(
-                    sample_window(ref_motion), ref_cond, self.opt, shared=ref_shared)
-            else:
-                # Both sides kept the stored rig, so the reference is the
-                # target's window and reuses its derived channels.
-                reference = finish_reference_sample(
-                    physical_motion, cond, self.opt,
-                    shared=dict(feats=motion, joint_struct=joint_struct, geometry=ref_geometry))
-                reference['same_rig'] = True
         m_length = target_num_frames
 
         # is_loop says the window is closed; on those rows loop_tile_count is
@@ -1649,8 +1586,6 @@ class MotionDataset(data.Dataset):
 
         paired_view = None
         if getattr(self.opt, 'autoencoder_dual_view', False) and _temporal_plan is None:
-            if ref_source is not None:
-                raise ValueError('AE dual views cannot be combined with ref_encoder')
             # Real reference pairs replace the synthetic second view when
             # available. Each motion retains its own rig and augmentation;
             # the validated frame-for-frame pair shares one temporal map.
@@ -1669,7 +1604,6 @@ class MotionDataset(data.Dataset):
 
         if return_aug_info:
             return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
-                'reference': reference,
                 'autoencoder_view': paired_view,
                 'joint_mask_limb_roots': _limb_root_mask(cond),
                 'limb_tip_mask': _limb_tip_mask(cond),
@@ -1699,7 +1633,6 @@ class MotionDataset(data.Dataset):
                 'object_cond': cond,  # Exact per-sample skeleton for augmentation previews.
             }
         return motion, m_length, parents, rest_geom, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
-            'reference': reference,
             'autoencoder_view': paired_view,
             'joint_mask_limb_roots': _limb_root_mask(cond),
             'limb_tip_mask': _limb_tip_mask(cond),
@@ -1784,13 +1717,13 @@ class MotionDataset(data.Dataset):
         carries -- the loader's joint bucketing keys on it.
         """
         names = self.name_list if self.use_weighted_sampler else self.name_list[self.pointer:]
-        groups = getattr(self, 'reference_groups', {})
+
+        groups = (getattr(self, 'reference_groups', {})
+                  if getattr(self.opt, 'autoencoder_reference_pairs', False) else {})
 
         def joints(name):
             return len(self.cond_dict[self.data_dict[name]['object_type']]['parents'])
 
-        # A grouped clip may carry any member's rig as its reference, and the
-        # collate pads to the wider of reference and target.
         return np.asarray(
             [max(joints(member) for member in groups.get(name, (name,))) for name in names],
             dtype=np.int64,
@@ -1980,7 +1913,6 @@ class Truebones(data.Dataset):
                 setattr(self.opt, prob_name, value)
         self.opt.loop_tile_single_prob = float(kwargs.get('loop_tile_single_prob', 0.5))
         self.opt.topology_aug_prob = float(kwargs.get('topology_aug_prob', 0.0))
-        self.opt.ref_encoder = bool(kwargs.get('ref_encoder', False))
         self.opt.joint_name_drop_prob = float(kwargs.get('joint_name_drop_prob', 0.0))
         if not 0 <= self.opt.joint_name_drop_prob <= 1:
             raise ValueError('joint_name_drop_prob must be in [0, 1]')

@@ -289,7 +289,7 @@ def working_to_stored(motion, *, is_loop):
 def rest_pos_from_cond(cond_entry, *, like=None):
     """The skeleton's physical rest-pose positions, ``[J, 3]``.
 
-    Public: the reference encoder's bone-direction channel reads this same
+    Public: the shared skeleton geometry channel reads this same
     position channel, so it is part of the feature contract, not an internal
     helper.
     """

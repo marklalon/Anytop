@@ -1059,7 +1059,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
         # graph_relations=False: spatial attention without the topology / edge
-        # bias and without relation tables (the reference encoder).
+        # bias and without relation tables.
         self.graph_relations = bool(graph_relations)
         if value_emb and not self.graph_relations:
             raise ValueError('value_emb needs graph_relations')
@@ -1194,8 +1194,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             loop_phase_mask: Optional[Tensor] = None,
             loop_cycles: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
-            ref_z: Optional[Tensor] = None,
-            ref_active: Optional[Tensor] = None,
             temporal_key_padding_mask: Optional[Tensor] = None,
             temporal_rope_off: Optional[Tensor] = None,
             motion_z: Optional[Tensor] = None,
@@ -1215,7 +1213,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # The loop phase table is built once here and shared by every layer:
         # the circular phase added before temporal attention, zeroed for
         # non-loop samples. Its period is T / loop_cycles ([B], the window's
-        # cycle count, 1 on a reference-active row) -- the same table MotionDiffusion put in
+        # cycle count) -- the same table MotionDiffusion put in
         # `tgt` for loop samples in place of the absolute PE. The cross-limb
         # blocks take no table: their latents inherit the frame PE through
         # cross-in (see CrossLimbTemporalBlock).
@@ -1290,7 +1288,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_embedding=loop_phase_embedding,
                     adaln=None if adaln is None else adaln[:, layer_ind],
-                    ref_z=ref_z, ref_active=ref_active,
                     temporal_key_padding_mask=temporal_key_padding_mask,
                     temporal_rope=temporal_rope, motion_z=motion_z)
         if self.norm is not None:
@@ -1320,24 +1317,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         # (B, 4, d_model) slice.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
-    def enable_reference(self, ref_dim):
-        """Allocate independently per layer, after all shared parameters exist.
-
-        Each frame offers only ``K`` slots of ``ref_dim`` values, so the
-        attention is parameterized in folded form: per head, a slot's key and
-        value map straight to ``d_model``. Scoring a joint token is one
-        ``[d_model, H*K]`` product and reading is one ``[H*K, d_model]``
-        product, with no ``d_model x d_model`` query / output projections.
-        This expresses every per-head bilinear query-key form of rank
-        <= ref_dim; a query bias term constant over slots cancels in softmax.
-        """
-        self.ref_norm = nn.LayerNorm(self.d_model)
-        self.ref_key = nn.Linear(ref_dim, self.heads * self.d_model, bias=False)
-        self.ref_key_bias = nn.Linear(ref_dim, self.heads, bias=False)
-        self.ref_value = nn.Linear(ref_dim, self.heads * self.d_model, bias=False)
-        self.ref_out_bias = nn.Parameter(torch.zeros(self.d_model))
-        self.ref_attn_gate = nn.Parameter(torch.zeros(()))
-
     def enable_motion_latent(self, latent_dim):
         """AE-only, frame-aligned latent reader; each decoder layer owns its weights."""
         self.motion_latent_norm = nn.LayerNorm(self.d_model)
@@ -1353,32 +1332,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         values = z.transpose(0, 1).reshape(frames * batch, z.shape[2], z.shape[3])
         read, _ = self.motion_latent_attn(query, values, values, need_weights=False)
         return x + read.reshape_as(x)
-
-    def _read_reference(self, x, z, active):
-        """``x`` [F, B, J, D], ``z`` [B, F, K, d_z].
-
-        ``active`` [B] bool. Inactive rows receive nothing, bias included
-        (hard bypass).
-        """
-        frames, batch, joints, width = x.shape
-        if z.shape[:2] != (batch, frames):
-            raise ValueError('Reference and output windows must be frame aligned')
-        slots = z.shape[2]
-        z = z.transpose(0, 1)  # [F, B, K, d_z]
-
-        def per_head(t):  # [F, B, K, H*D] -> [F, B, H*K, D]
-            t = t.view(frames, batch, slots, self.heads, width).transpose(2, 3)
-            return t.reshape(frames, batch, self.heads * slots, width)
-
-        keys, values = per_head(self.ref_key(z)), per_head(self.ref_value(z))
-        bias = self.ref_key_bias(z).transpose(2, 3).reshape(frames, batch, 1, self.heads * slots)
-        scores = torch.matmul(self.ref_norm(x), keys.transpose(-1, -2)) * (width ** -0.5) + bias
-        weights = torch.softmax(scores.float().view(frames, batch, joints, self.heads, slots), dim=-1)
-        weights = F.dropout(weights, self.dropout1.p, self.training).to(values.dtype)
-        out = torch.matmul(weights.view(frames, batch, joints, self.heads * slots), values)
-        out = out + self.ref_out_bias
-        live = active.to(out.dtype).view(1, batch, 1, 1)
-        return x + out * (self.ref_attn_gate * live)
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -1412,7 +1365,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             # table alone.
             x = x + self.temporal_phase_scale * loop_phase_embedding.unsqueeze(2)
         # Every frame token attends over the whole window, except frames flagged
-        # in key_padding_mask ((B * J, T); only the reference encoder passes one).
+        # in key_padding_mask ((B * J, T)).
         x = x.view(frames, bs * njoints, feats)
         rope = None
         if temporal_rope is not None:
@@ -1453,8 +1406,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
         adaln: Optional[Tensor] = None,
-        ref_z: Optional[Tensor] = None,
-        ref_active: Optional[Tensor] = None,
         temporal_key_padding_mask: Optional[Tensor] = None,
         temporal_rope: Optional[Tuple[Tensor, Tensor]] = None,
         motion_z: Optional[Tensor] = None) -> Tensor:
@@ -1466,8 +1417,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.norm1(x + spatial_attn_output)
         if motion_z is not None:
             x = self._read_motion_latent(x, motion_z)
-        if ref_z is not None:
-            x = self._read_reference(x, ref_z, ref_active)
         # Branch input only; the residual adds to the unmodulated x. The
         # modulation lands BEFORE the circular phase, which _temporal_mha_block
         # sums in, so a loop sample's phase is never scaled by the label.

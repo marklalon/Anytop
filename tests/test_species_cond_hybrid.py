@@ -111,20 +111,7 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.input_process.species_film_j)
 
-    def test_inactive_row_bypasses_entire_joint_modulation(self):
-        model = _make_model(species_cond=True).eval()
-        ip = model.input_process
-        torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.1)
-        x, rest, joints, species = _joint_cond_inputs(batch=2)
-        struct = _joint_struct(2)
-        mixed = ip(x, rest, joints, joint_struct=struct, species_code=species,
-                   species_active=torch.tensor([True, False]))
-        ip.species_film_j = None
-        plain = ip(x, rest, joints, joint_struct=struct)
-        self.assertFalse(torch.allclose(mixed[:, 0], plain[:, 0]))
-        self.assertTrue(torch.equal(mixed[:, 1], plain[:, 1]))
-
-    def test_training_without_reference_never_drops_species(self):
+    def test_training_never_drops_species(self):
         model = _make_model(species_cond=True).train()
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         model.seqTransDecoder = _CaptureDecoder()
@@ -256,7 +243,6 @@ class SpeciesHybridTest(unittest.TestCase):
         out = model(x, ts, y=y)
         self.assertIsNotNone(capture.last_kwargs)
         self.assertEqual(out.shape, x.shape)
-
 
 
 if __name__ == '__main__':
