@@ -144,6 +144,22 @@ def _resolve_action_condition(args, model):
         # exactly what the loader emits for the same label.
         tokens = parse_action_label(label)
 
+    if getattr(args, 'auto_direction', 'auto') != 'off':
+        from utils.action_direction_prior import complete_direction, load_direction_prior
+        from data_loaders.truebones.truebones_utils.motion_labels import DIRECTION_VOCAB
+        if not any(word in DIRECTION_VOCAB for word in tokens):
+            prior = load_direction_prior(getattr(args, 'model_path', ''))
+            if prior is None and getattr(args, 'model_path', ''):
+                print('[generate] no saved direction statistics; keeping the label as written. '
+                      'Use tools/build_action_direction_prior.py to build them for this checkpoint.')
+            completed, decision = complete_direction(label, prior, getattr(args, 'seed', 0))
+            if decision is not None:
+                print(f"[generate] auto direction: {label!r} -> {completed!r} "
+                      f"(coverage {decision['coverage']:.1%}; "
+                      f"candidate probabilities {decision['candidates']})")
+                label = completed
+                tokens = parse_action_label(label)
+
     # The same contract function the loader calls, so the sampler cannot hand
     # the model a slot assignment training never produced.
     slots = action_label_slots(tokens)

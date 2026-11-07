@@ -646,15 +646,19 @@ def add_generate_options(parser):
                             "vectors live in the checkpoint and no T5 runs at generation. A "
                             "recognizable prompt written out of canonical order is rewritten to it "
                             "(with a printed note); head-word order is kept as given, since it "
-                            "carries no meaning to the model. Naming no direction is legal and means "
-                            "'any' (the model answers with the marginal over directions, which "
-                            "training drops direction words at random to teach). A label names "
+                            "affects the head-slot weighting. An omitted direction is filled from "
+                            "checkpoint training statistics when direction coverage is >= 80%; "
+                            "use --auto_direction off to keep it empty. A label names "
                             "the MOTION only and says nothing about what the character holds, so "
                             "'attack, slash' covers the armed and the unarmed strike alike; name an "
                             "implement as a modifier ('attack, slash, shield') when the implement "
                             "IS the motion. Empty = "
                             "unconditional (the learned null embedding). Requires a checkpoint "
                             "trained with --action_label_cond.")
+    group.add_argument("--auto_direction", default='auto', choices=['auto', 'off'],
+                       help="Fill omitted directions using checkpoint-local statistics. Near-top "
+                            "direction combinations (within 10 percentage points) are sampled "
+                            "in proportion to training counts, reproducibly using --seed.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over --action_label. 1.0 (default) = "
                             "off: one forward per diffusion step, the conditional prediction as-is. "
@@ -703,7 +707,7 @@ def generate_args(argv=None):
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
     # Checkpoint action_group is training metadata and is not restored for generation.
-    preserve_cli_args = {'action_label', 'species_tags'}
+    preserve_cli_args = {'action_label', 'species_tags', 'auto_direction'}
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,

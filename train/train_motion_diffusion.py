@@ -353,6 +353,8 @@ def run_training(args):
         assert_resume_keeps_action_group(args, resume_dir or save_dir)
         record_sample_selection(report, save_dir, resume_directory=resume_dir)
     shutil.copy2(opt.cond_file, os.path.join(save_dir, 'cond.npy'))
+    from utils.action_direction_prior import prior_from_dataset, save_direction_prior
+    save_direction_prior(prior_from_dataset(data.dataset), save_dir)
     write_args_json(args, os.path.join(save_dir, 'args.json'))
     ml_platform_type = eval(args.ml_platform_type)
     ml_platform = ml_platform_type(save_dir=args.save_dir)

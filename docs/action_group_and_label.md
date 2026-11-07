@@ -266,8 +266,27 @@ python sample/generate.py ... --action_label "run, forward" --num_frames 40
 
 - 只接受受控 token；未知 token 是硬错误并列出合法词（词向量在 checkpoint 里，推理不跑 T5，自由文本无处可去）。
 - 可识别但不规范的写法被改写为规范拼写并提示；**主词顺序按用户给的保留**，它就是条件。
-- 不写方向 = 方向边缘分布。标签只描述**动作**，不描述角色拿着什么：`attack, slash` 同时覆盖持械与徒手；器具本身就是动作时才写成修饰词。
+- 省略方向时默认按训练统计补全，`--auto_direction off` 可关闭（规则见下）。标签只描述**动作**，不描述角色拿着什么：`attack, slash` 同时覆盖持械与徒手；器具本身就是动作时才写成修饰词。
 - 空 = 无条件（null embedding）。checkpoint 必须以 `--action_label_cond` 训练，否则带 label 直接退出。
+
+自动方向规则：
+
+- 按**完整且有序的 head 组合**统计，modifier 合并计数。`roll` 与 `roll, jump` 独立；`jump, roll` 也不借用前者的统计。
+- 使用实际训练加载器选中的 clip，每条一票，包含无方向标签作为分母；不使用采样权重，也不使用增强后的窗口数。
+- 方向覆盖率 **≥80% 必须补**，没有最低样本数。低于阈值或不存在该 head 组合时保持原标签。
+- 对有方向样本统计完整方向组合；与最高占比相差 **≤10 个百分点**的组合作为候选，按候选训练计数归一化随机选择。仅一个候选就直接采用；不会拆开方向组合拼接。
+- 用户已指定任何方向词时不补。每次生成任务选择一次，使用独立的 `--seed` 随机源，不消耗模型采样的全局随机序列。
+- 补全先于 slot 组装、长度和 loop 先验查询；日志显示最终标签、覆盖率和候选概率，已有标签元数据记录最终标签。
+
+训练启动时在 checkpoint 目录保存 `action_direction_prior.json`，包含计数、阈值和所选 clip id / label 的 SHA256 指纹。模型结构和 checkpoint 版本不变，旧权重无需转换。旧 checkpoint 缺少该文件时优先从同目录保存的 `sample_selection.json` 恢复统计；两者都没有则提示补建，保持原标签并继续推理，不读取当前数据集猜测旧模型的训练分布。
+
+可显式补建并保存统计（在 `Anytop` 目录运行）：
+
+```powershell
+python tools/build_action_direction_prior.py --checkpoint-dir save/motion_diffusion_alpha_v1
+```
+
+没有保存的样本清单时，只有确认原训练数据仍然可用才使用 `--rebuild-from-dataset`，工具按保存的 `args.json` 重建训练选择；训练 cond 移动后可传 `--cond-path` 指定原 cond。该模式读取当前可用的数据，无法证明历史标签未变，不会在推理时自动执行。
 
 ### 7.2 CFG：`--action_label_cfg_scale`
 
@@ -307,7 +326,7 @@ out = out_uncond + s * (out_cond - out_uncond)
 - **本身不指向任何方向的动作一律不写平面方向词**（`NO_PLANAR_DIRECTION_WORDS`）：`hurt` `getup` `idle` `rest` `stop` `draw` `sheathe` `bite`。理由：受击和身体状态不是"朝哪发力"；`draw` / `sheathe` 的侧向是刀鞘位置；`bite` 由头部（中心关节）发起，侧向能量读到的是身体转向。匹配**不限于头词**（`idle, right, look` → `idle, look`），已 reviewed 的行也适用。镜像的两条 clip 因此可以拥有**相同**标签（`Trex_BiteLeft` / `Trex_BiteRight` 都是 `attack, bite`）。
 - **竖直轴不在豁免内**：`up` / `down` 说的是动作真的向上 / 向下，`idle, up, aim, bow` 保留。
 - `hover` 是原地悬停，没有水平朝向要写（`NO_HEADING_WORDS`）。`dive` / `fall` / `up` / `down` 在竖直轴上，不要求平面朝向（`VERTICAL_WORDS`）。
-- **jump 的方向**：方向槽有 dropout，所以裸 `jump` 只能表示"任意跳"。原地竖直跳写 `jump, up`；前跳写 `jump, forward`；行进中的跳写 `run, forward, jump` 这类。
+- **jump 的方向**：原地竖直跳写 `jump, up`；前跳写 `jump, forward`；行进中的跳写 `run, forward, jump` 这类。推理中的裸 `jump` 按上述训练统计决定默认方向。
 - **die 的方向是身体倒向哪边**，一次死亡只写一个词。死在空中（标签带 `hover` / `fall` / `fly`）、起始离地、质心不下降、原地瘫倒的，都不写朝向。
 
 ### 8.3 为什么方向判定不能用 root 位移

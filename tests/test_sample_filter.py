@@ -280,7 +280,11 @@ def test_training_records_derived_group_and_refuses_changed_resume_before_overwr
 
     class Pool(list):
         sample_filter_report = report
-        motion_dataset = SimpleNamespace(cond_dict={})
+        motion_dataset = SimpleNamespace(
+            cond_dict={},
+            name_list=[row['clip_id'] for row in report['clips']],
+            data_dict={row['clip_id']: {'motion_metadata': row} for row in report['clips']},
+        )
 
     data = SimpleNamespace(dataset=Pool(report['clips']))
     monkeypatch.setattr(training, 'prepare_save_dir', lambda args: str(save))
@@ -299,6 +303,10 @@ def test_training_records_derived_group_and_refuses_changed_resume_before_overwr
     recorded = json.loads((save / 'args.json').read_text())
     assert recorded['action_group'] == 'all'
     assert recorded['effective_action_groups'] == ['locomotion', 'stationary']
+    from utils.action_direction_prior import build_direction_prior, load_direction_prior
+    assert load_direction_prior(save / 'model000001.pt') == build_direction_prior(
+        (row['clip_id'], row['action_label']) for row in report['clips']
+    )
     original = (save / 'args.json').read_bytes()
     args.resume_checkpoint = str(save / 'model000001.pt')
     training.run_training(args)  # Identical pool is accepted.
