@@ -13,8 +13,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import MODEL_CHAN
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     HEAD_SLOT_PRIMARY_WEIGHT,
-    SLOT_DIRECTION,
-    SLOT_MODIFIER,
     SLOT_HEAD,
     ActionConditioningError,
     projection_input_dim,
@@ -410,34 +408,6 @@ class MotionConditioningMixin:
         return torch.cat(blocks, dim=-1)
 
 
-    def _drop_slot_words(self, word_mask, slot_ids, slot, prob, batch_size, device):
-        """Training-only: blank the words of *slot* on a random subset of rows.
-
-        A pure mask operation, written like the CFG keep mask so it compiles
-        the same way: a dropped row's members of that slot leave ``word_mask``,
-        the slot's channel pools to its zero row, and every other slot is
-        untouched. Rows with no word in the slot are unaffected, and the label
-        stays valid (a head word is never dropped and every label carries one,
-        so ``action_label_valid`` cannot flip). Eval and inference never drop.
-        """
-        if not self.training or prob <= 0.0:
-            return word_mask
-        drop = torch.rand(batch_size, device=device) < prob
-        return word_mask & ~(drop[:, None] & (slot_ids == slot))
-
-
-    def _drop_direction_slot(self, word_mask, slot_ids, batch_size, device):
-        return self._drop_slot_words(
-            word_mask, slot_ids, SLOT_DIRECTION, self.direction_slot_drop_prob, batch_size, device
-        )
-
-
-    def _drop_modifier_slot(self, word_mask, slot_ids, batch_size, device):
-        return self._drop_slot_words(
-            word_mask, slot_ids, SLOT_MODIFIER, self.modifier_slot_drop_prob, batch_size, device
-        )
-
-
     def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
 
@@ -508,8 +478,6 @@ class MotionConditioningMixin:
             word_mask = None
         else:
             word_ids, slot_ids, word_mask = resolved
-            word_mask = self._drop_direction_slot(word_mask, slot_ids, batch_size, device)
-            word_mask = self._drop_modifier_slot(word_mask, slot_ids, batch_size, device)
             channels = self._compact_action_slot_channels(
                 self._assemble_action_slot_channels(word_ids, slot_ids, word_mask, dtype)
             )

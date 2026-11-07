@@ -401,22 +401,7 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
-    group.add_argument("--direction_slot_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability of blanking the label's DIRECTION words during "
-                            "training while the rest of the label stays. Trains the empty direction "
-                            "slot as 'any direction', so a prompt that names none draws one side "
-                            "or heading instead of a blend. Stacks with --action_label_cfg_drop_prob, "
-                            "which drops the WHOLE label: a row contributes explicit direction "
-                            "supervision with probability (1 - cfg_drop) * (1 - this). Lower it if "
-                            "direction control comes out weak. Never applied at inference. Default 0.15.")
-    group.add_argument("--modifier_slot_drop_prob", default=0.15, type=float,
-                       help="Per-sample probability of blanking the label's MODIFIER words during "
-                            "training while the head and direction words stay. Trains the "
-                            "empty modifier slot as the marginal over modifiers, so a bare 'attack' "
-                            "at inference draws some attack (bite, cast, swat ...) instead of the "
-                            "few clips annotated with no modifier. Independent of "
-                            "--direction_slot_drop_prob per row. Never applied at inference. "
-                            "Default 0.15.")
+
 
 def add_data_options(parser, training=False):
     """Training selects all clips by default; optional JSON rules narrow the pool."""

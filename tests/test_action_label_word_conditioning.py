@@ -63,8 +63,7 @@ from tests.action_label_test_utils import (  # noqa: E402
 
 
 def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
-           action_label_cond=True, eval_mode=True, direction_drop_prob=0.0,
-           modifier_drop_prob=0.0):
+           action_label_cond=True, eval_mode=True):
     # MotionDiffusion.train() drops nn.Module.train's return value, so .eval() cannot be
     # chained onto the constructor here.
     model = MotionDiffusion(
@@ -79,8 +78,6 @@ def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
         t5_out_dim=TEST_T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=drop_prob,
-        direction_slot_drop_prob=direction_drop_prob,
-        modifier_slot_drop_prob=modifier_drop_prob,
         action_conditioning=bundle if action_label_cond else None,
     )
     if eval_mode:
@@ -111,122 +108,28 @@ def test_model_channels_equal_the_numpy_contract():
     assert torch.allclose(got, expected, atol=1e-12)
 
 
-# --------------------------------------------------------------------------
-# Direction-slot dropout: a training-only mask on the direction words
-# --------------------------------------------------------------------------
-def _direction_dropped_channels(model, labels, groups, dtype=torch.float64):
-    fields = action_cond_fields(labels, groups)
-    batch = fields['action_word_ids'].shape[0]
-    word_mask = model._drop_direction_slot(
-        fields['action_word_mask'], fields['action_slot_ids'], batch, torch.device('cpu'),
-    )
-    channels = model._assemble_action_slot_channels(
-        fields['action_word_ids'], fields['action_slot_ids'], word_mask, dtype,
-    )
-    return channels, word_mask
-
-
-def test_direction_slot_dropout_zeroes_only_the_direction_channel_in_training():
+def test_training_preserves_all_action_slot_channels():
     bundle = make_test_bundle()
-    model = _model(bundle, direction_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, carry', 'attack, left, swat', 'idle']
-    groups = ['locomotion', 'stationary', 'stationary']
-    reference = _channels(model, labels, groups)
-    dropped, word_mask = _direction_dropped_channels(model, labels, groups)
-    width = TEST_T5_DIM
-    # The direction channel is the zero row on every row ...
-    assert torch.count_nonzero(dropped[:, width:2 * width]) == 0
-    # ... and the head and modifier channels are bit-identical.
-    assert torch.equal(dropped[:, :width], reference[:, :width])
-    assert torch.equal(dropped[:, 2 * width:], reference[:, 2 * width:])
-    # A dropped row keeps its other words, so it is still a labelled row
-    # (never a CFG null): every row still has a live word.
-    assert bool(word_mask.any(dim=-1).all())
-
-
-def test_direction_slot_dropout_is_off_in_eval_and_at_zero_probability():
-    bundle = make_test_bundle()
-    labels = ['walk, forward', 'run, backward, left']
-    groups = ['locomotion', 'locomotion']
-    reference = _channels(_model(bundle), labels, groups)
-    for model in (_model(bundle, direction_drop_prob=1.0, eval_mode=True),
-                  _model(bundle, direction_drop_prob=0.0, eval_mode=False)):
-        dropped, word_mask = _direction_dropped_channels(model, labels, groups)
-        assert torch.equal(dropped, reference)
-        assert torch.equal(word_mask, action_cond_fields(labels, groups)['action_word_mask'])
-
-
-def test_direction_slot_dropout_is_per_row():
-    bundle = make_test_bundle()
-    model = _model(bundle, direction_drop_prob=0.5, eval_mode=False)
-    labels = ['walk, forward'] * 64
-    groups = ['locomotion'] * 64
-    torch.manual_seed(0)
-    _dropped, word_mask = _direction_dropped_channels(model, labels, groups)
-    kept = word_mask[:, 1]          # the direction word is token 1 of 'walk, forward'
-    assert 0 < int(kept.sum()) < 64  # some rows dropped, some kept
-    assert bool(word_mask[:, 0].all())
-
-
-# --------------------------------------------------------------------------
-# Modifier-slot dropout: the same mask, on the modifier words
-# --------------------------------------------------------------------------
-def _modifier_dropped_channels(model, labels, groups, dtype=torch.float64):
-    fields = action_cond_fields(labels, groups)
-    batch = fields['action_word_ids'].shape[0]
-    word_mask = model._drop_modifier_slot(
-        fields['action_word_mask'], fields['action_slot_ids'], batch, torch.device('cpu'),
-    )
-    channels = model._assemble_action_slot_channels(
-        fields['action_word_ids'], fields['action_slot_ids'], word_mask, dtype,
-    )
-    return channels, word_mask
-
-
-def test_modifier_slot_dropout_zeroes_only_the_modifier_channel_in_training():
-    bundle = make_test_bundle()
-    model = _model(bundle, modifier_drop_prob=1.0, eval_mode=False)
-    labels = ['walk, forward, carry', 'attack, left, swat', 'idle, sniff', 'attack, jump, charge']
+    model = _model(bundle, eval_mode=False)
+    labels = ['walk, forward, carry', 'attack, left, swat', 'idle, sniff', 'idle']
     groups = ['locomotion', 'stationary', 'stationary', 'stationary']
-    reference = _channels(model, labels, groups)
-    dropped, word_mask = _modifier_dropped_channels(model, labels, groups)
-    width = TEST_T5_DIM
-    # The modifier channel is the zero row on every row ...
-    assert torch.count_nonzero(dropped[:, 2 * width:3 * width]) == 0
-    # ... and the head and direction channels are bit-identical: a second HEAD
-    # word ("attack, jump") is not a modifier and survives.
-    assert torch.equal(dropped[:, :2 * width], reference[:, :2 * width])
-    # A dropped row keeps its head word, so it is still a labelled row.
-    assert bool(word_mask.any(dim=-1).all())
-
-
-def test_modifier_slot_dropout_is_off_in_eval_and_at_zero_probability():
-    bundle = make_test_bundle()
-    labels = ['attack, swat', 'idle, sniff']
-    groups = ['stationary', 'stationary']
-    reference = _channels(_model(bundle), labels, groups)
-    for model in (_model(bundle, modifier_drop_prob=1.0, eval_mode=True),
-                  _model(bundle, modifier_drop_prob=0.0, eval_mode=False)):
-        dropped, word_mask = _modifier_dropped_channels(model, labels, groups)
-        assert torch.equal(dropped, reference)
-        assert torch.equal(word_mask, action_cond_fields(labels, groups)['action_word_mask'])
-
-
-def test_modifier_and_direction_dropout_are_independent_per_row():
-    """Both slots drop, each by its own coin: rows exist in all four states."""
-    bundle = make_test_bundle()
-    model = _model(bundle, direction_drop_prob=0.5, modifier_drop_prob=0.5, eval_mode=False)
-    labels = ['attack, left, swat'] * 256   # tokens: head, direction, modifier
-    groups = ['stationary'] * 256
     fields = action_cond_fields(labels, groups)
-    torch.manual_seed(0)
-    word_mask = model._drop_direction_slot(
-        fields['action_word_mask'], fields['action_slot_ids'], 256, torch.device('cpu'),
+    original_mask = fields['action_word_mask'].clone()
+    expected = model._compact_action_slot_channels(
+        reference_channels(bundle, labels, groups)
     )
-    word_mask = model._drop_modifier_slot(word_mask, fields['action_slot_ids'], 256, torch.device('cpu'))
-    assert bool(word_mask[:, 0].all())
-    states = {(bool(d), bool(m)) for d, m in zip(word_mask[:, 1], word_mask[:, 2])}
-    assert states == {(True, True), (True, False), (False, True), (False, False)}
+    channels, active = model._action_condition(
+        fields, len(labels), torch.device('cpu'), torch.float64,
+    )
+    assert torch.allclose(channels, expected, atol=1e-12)
+    assert bool(active.all())
+    assert torch.equal(fields['action_word_mask'], original_mask)
+    model.eval()
+    eval_channels, eval_active = model._action_condition(
+        fields, len(labels), torch.device('cpu'), torch.float64,
+    )
+    assert torch.equal(channels, eval_channels)
+    assert torch.equal(active, eval_active)
 
 
 def test_projection_consumes_one_block_per_slot():

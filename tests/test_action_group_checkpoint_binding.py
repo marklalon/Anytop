@@ -95,6 +95,16 @@ class GenerationIgnoresTrainingGroup(unittest.TestCase):
                     model_path = _checkpoint_dir(tmp, **recorded)
                     self.assertFalse(hasattr(_generate_args(model_path), 'action_group'))
 
+    def test_generation_accepts_checkpoint_with_retired_slot_dropout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = _checkpoint_dir(
+                tmp, version=60,
+                direction_slot_drop_prob=0.15, modifier_slot_drop_prob=0.15,
+            )
+            args = _generate_args(model_path)
+            self.assertFalse(hasattr(args, 'direction_slot_drop_prob'))
+            self.assertFalse(hasattr(args, 'modifier_slot_drop_prob'))
+
     def test_other_dataset_args_still_come_from_the_checkpoint(self):
         # Guards the mechanism the binding rides on: the rest of the dataset group
         # is still overwritten by the training args.

@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """Propose the missing DIRECTION word of an ``action_labels.jsonl`` row from its motion.
 
-The direction slot has a dropout in training (``--direction_slot_drop_prob``),
-so an empty slot means "the marginal over directions" and nothing else. That
-makes every row whose content HAS one dominant heading or side and spells none
-a mislabel: the model learns that ``attack, swat`` is a right swat, and a bare
-prompt gets a right swat instead of either. This tool finds those rows and
-fills them, under four rules that never bend:
+Rows with a dominant heading or side benefit from an explicit direction label.
+This tool finds those rows and proposes missing words under four rules:
 
 * Only an EMPTY slot is filled. A direction word already on a row is a
   hand-verified truth; the tool calibrates its own sign and thresholds against

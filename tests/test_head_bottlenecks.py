@@ -30,7 +30,6 @@ def _args(**overrides):
         value_emb=False, cross_limb_latents=2, cross_limb_dim=8, cross_limb_last_n=1,
         species_cond=True,
         joint_name_drop_prob=0.0, action_label_cond=True,
-        direction_slot_drop_prob=0.0, modifier_slot_drop_prob=0.0,
         action_conditioning=None,
     )
     for k, v in overrides.items():

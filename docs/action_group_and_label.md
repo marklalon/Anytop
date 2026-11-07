@@ -235,20 +235,9 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 
 `--action_label_cfg_drop_prob`（默认 0.2）：按样本整条丢弃标签，换成 null embedding，训练出真正的无条件模态，推理 CFG 才有东西可引导。
 
-### 6.2 方向槽 dropout
+方向槽和修饰词槽不再做训练期 dropout。旧 checkpoint 配置中的对应概率字段会被忽略；模型结构和推理行为不变，保持 checkpoint 版本 60 兼容。
 
-`--direction_slot_drop_prob`（默认 0.15）：按样本只抹掉方向词，其余词不动。
-
-- 目的：让**空方向槽 = 任一方向（边缘分布）**。否则语料里大多数单侧攻击不写方向，模型会把"空槽"学成"这个物种攻击的样子"，裸 `attack, swat` 就会出双臂混合或固定一侧。
-- 纯 mask 运算，与 CFG 抽样同写法，不影响 compile；推理永不 drop。
-- 与 CFG 丢弃叠加：带方向词的行贡献显式方向监督的概率是 `(1 − cfg_drop) × (1 − p)`；左右可辨性不够就降这个值。
-- 标签里至少有一个主词，因此 dropout 不会让标签变空、不会翻转 `valid`。
-
-### 6.3 修饰词槽 dropout
-
-`--modifier_slot_drop_prob`（默认 0.15）：同构，只抹修饰词，让空修饰槽表示"修饰词的边缘分布"（裸 `attack` 抽到某种攻击，而不是语料里少数不带修饰的 clip）。与方向 dropout 逐行独立。
-
-### 6.4 采样：稀有主词补偿
+### 6.2 采样：稀有主词补偿
 
 默认对 clip 均匀采样，物种不做均衡。两条规则都以 label 的**首个主词**为键：
 
@@ -257,7 +246,7 @@ checkpoint 的 load / resume / bind 受两层指纹把关，不兼容的 checkpo
 
 改这两项会改变训练分布，应开新 run 而不是续训。
 
-### 6.5 is_loop 与 loop 相关增强
+### 6.3 is_loop 与 loop 相关增强
 
 - `is_loop` 来自 sidecar（§2），与标签一起进入条件。
 - **phase-free** vs **phase-anchored**（`loop_is_phase_free`）：**主词为 `idle` 时无条件 phase-free**——idle 没有可区分帧，叠在它上面的状态/事件都视作 idle 状态的一部分，loop 可滚动/平铺（`idle, look` / `idle, rear` / `idle, spin` … 全都不锚定）。非 idle 主词的 loop，才要求每个主词都在 `PHASE_FREE_LOOP_HEADS`（步态、翅拍、呼吸、持续姿态：`walk run swim fly idle crawl climb roll rest fall`）且每个修饰词都在 `PHASE_FREE_LOOP_MODIFIERS`（步态 / 速度 / 保持的姿态 / 手持物 / 细碎次级动作：`look eat yawn scratch sniff`），否则是"离开准备姿态再回来"的一次性事件（打击、跳、吼、`walk, bite`…），frame 0 是准备姿态，窗口里正好一次事件，滚动会打乱事件时序。白名单制：非 idle 的新词默认 anchored（少做一点增强，好过打乱时序）。

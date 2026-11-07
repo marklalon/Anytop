@@ -84,25 +84,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
             )
-        # Slot dropout: with these probabilities a training sample keeps its
-        # label but loses the words of ONE slot, so that slot's empty row is
-        # trained as the marginal over its words rather than as a content key.
-        #   direction: a bare "attack, swat" at inference draws one side rather
-        #              than a blend of both.
-        #   modifier:  a bare "attack" draws SOME attack (bite, cast, swat ...)
-        #              rather than the handful of clips annotated without a
-        #              modifier, which is what an undropped empty slot learns.
-        # The two draws are independent per row.
-        self.direction_slot_drop_prob = float(kargs.get('direction_slot_drop_prob', 0.0))
-        if not 0.0 <= self.direction_slot_drop_prob <= 1.0:
-            raise ValueError(
-                f"direction_slot_drop_prob must be in [0, 1], got {self.direction_slot_drop_prob}"
-            )
-        self.modifier_slot_drop_prob = float(kargs.get('modifier_slot_drop_prob', 0.0))
-        if not 0.0 <= self.modifier_slot_drop_prob <= 1.0:
-            raise ValueError(
-                f"modifier_slot_drop_prob must be in [0, 1], got {self.modifier_slot_drop_prob}"
-            )
         # The action token also gets a multiplicative pathway through the
         # decoder on top of the additive one (GraphMotionDecoder owns the head).
         # It exists exactly when there is a label to drive it.

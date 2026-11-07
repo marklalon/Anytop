@@ -54,8 +54,6 @@ pushd "%SCRIPT_DIR%"
 	--dropout_prob 0.05 ^
     --action_label_cfg_drop_prob 0.15 ^
 	--joint_name_drop_prob 0.15 ^
-	--direction_slot_drop_prob 0.15 ^
-	--modifier_slot_drop_prob 0.15 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.1 ^
 	--lambda_drot 0.1 ^
