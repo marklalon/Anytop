@@ -1,25 +1,3 @@
-{"clip": "DNL_Cattle_Angry", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, taunt"}
-{"clip": "DNL_Cattle_Attack1", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, rear, headbutt"}
-{"clip": "DNL_Cattle_Attack2", "action_group": "stationary", "reviewed": true, "is_loop": false, "action_label": "attack, backward, kick"}
-{"clip": "DNL_Cattle_BreakHook", "action_group": "transition", "reviewed": true, "is_loop": true, "action_label": "rear"}
-{"clip": "DNL_Cattle_Calling", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "roar"}
-{"clip": "DNL_Cattle_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": false, "action_label": "run, forward"}
-{"clip": "DNL_Cattle_Die", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
-{"clip": "DNL_Cattle_Eat", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle, eat"}
-{"clip": "DNL_Cattle_GetUp", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
-{"clip": "DNL_Cattle_Idle", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "DNL_Cattle_JumpUp", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "jump, up"}
-{"clip": "DNL_Cattle_Kneel", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "kneel"}
-{"clip": "DNL_Cattle_MoveFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "walk, forward"}
-{"clip": "DNL_Cattle_Sleeping", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, left, sleep"}
-{"clip": "DNL_Cattle_SleepingIn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "laydown"}
-{"clip": "DNL_Cattle_SleepingOut", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
-{"clip": "DNL_Cattle_SleepingStartled", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "getup"}
-{"clip": "DNL_Cattle_Startled", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "idle"}
-{"clip": "DNL_Cattle_SwimIdle", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, idle"}
-{"clip": "DNL_Cattle_SwimmingFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "swim, forward"}
-{"clip": "DNL_Cattle_Torpid", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "rest, right, sleep"}
-{"clip": "DNL_Cattle_TorpidIn", "action_group": "transition", "reviewed": true, "is_loop": false, "action_label": "die"}
 {"clip": "DNL_F0006_BigHurt", "action_group": "stationary", "reviewed": true, "is_loop": true, "action_label": "hurt"}
 {"clip": "DNL_F0006_ChargeFwd", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "run, forward"}
 {"clip": "DNL_F0006_Falling", "action_group": "locomotion", "reviewed": true, "is_loop": true, "action_label": "fall"}
