@@ -386,6 +386,7 @@ async function selectTask(task) {
     loading = false;
     return;
   }
+  $('views').classList.toggle('single-view', task.clips.length === 1);
   // Fetch once, then parse separate skeletons for independent scenes.
   const referenceData = task.reference_clip ? fetch(task.reference_clip.url, { signal }).then(response => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -537,8 +538,10 @@ function animate(now) {
   stage.style.height = `${height}px`;
   if (width !== stageWidth || height !== stageHeight) {
     renderer.setSize(width, height);
-    // Explicit row height keeps the initial layout at 2x2 even with more clips.
-    $('views').style.gridAutoRows = `${Math.max(240, (height - 24) / 2)}px`;
+    // One clip fills the review area; multiple clips retain the 2x2 layout.
+    const rowHeight = $('views').classList.contains('single-view')
+      ? height - 16 : Math.max(240, (height - 24) / 2);
+    $('views').style.gridAutoRows = `${rowHeight}px`;
     stageWidth = width; stageHeight = height;
   }
   renderer.setScissorTest(false);
