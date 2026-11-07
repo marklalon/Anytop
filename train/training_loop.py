@@ -1,6 +1,7 @@
 import functools
 import os
 import re
+import sys
 import json
 import contextlib
 import numpy as np
@@ -10,6 +11,7 @@ import blobfile as bf
 import torch
 from torch.optim import AdamW
 from diffusion import logger
+from diffusion.logger import HumanOutputFormat
 from utils import dist_util
 from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, format_optimizer_slot_max, inspect_optimizer_slot_max, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
@@ -140,7 +142,6 @@ class TrainLoop:
 
         self.step = 0
         self.resume_step = 0
-        self.global_batch = self.batch_size # * dist.get_world_size()
         self.num_steps = args.num_steps
         data_length = len(self.data)
         if data_length <= 0:
@@ -163,6 +164,13 @@ class TrainLoop:
         if self.amp_enabled and self.device.type != 'cuda':
             raise ValueError('AMP requires CUDA. Set --amp_dtype fp32 when training on CPU.')
         self.non_blocking = self.device.type == 'cuda'
+        # Eval summaries print as their own table, like train_autoencoder's.
+        self.console = HumanOutputFormat(sys.stdout)
+        tqdm.write(f'[INFO] device={self.device}, train={self.amp_dtype}, '
+                   f'losses/evaluation=fp32, lr={self.lr:.3e}, '
+                   f'weight_decay={self.weight_decay:g}, '
+                   f'EMA={getattr(self.args, "use_ema", False)}, '
+                   f'ema_rate={getattr(self.args, "ema_rate", 0.0):g}')
         # Built before the optimizer restore below, which reloads its reference.
         sample_loss_limit = float(getattr(self.args, 'sample_loss_limit', 0.0))
         self.sample_loss_limiter = (
@@ -475,33 +483,25 @@ class TrainLoop:
                 logger.log("sample loss limiter reference restore skipped: timestep count changed")
 
     def run_loop(self):
-        tqdm.write(f'train steps: {self.num_steps}')
-        while self.total_step() < self.num_steps:
-            tqdm.write(f'Starting a new epoch at step {self.total_step()}')
-            data_iter = iter(tqdm(self.data))
-            while True:
-                try:
-                    motion, cond = next(data_iter)
-                except StopIteration:
-                    break
-
+        start = self.total_step()
+        tqdm.write(f'train steps: {self.num_steps} (log={self.log_interval}, '
+                   f'eval={self.eval_interval}, save={self.save_interval})')
+        with self._open_training_log() as log_file, tqdm(
+                range(start + 1, self.num_steps + 1), initial=start,
+                total=max(start, self.num_steps), desc='Diffusion training',
+                unit='step', dynamic_ncols=True, smoothing=0.05) as progress:
+            batches = self._epoch_batches()
+            for completed_step in progress:
+                motion, cond = next(batches)
                 motion = self._move_batch_to_device(motion)
                 cond = self._move_cond_to_device(cond)
 
                 self.run_step(motion, cond)
 
-                completed_step = self.total_step() + 1
-
-                if completed_step % self.log_interval == 0:
-                    self._assert_optimizer_state_finite(completed_step)
-                    interval_loss_metrics = self._flush_interval_loss_metrics()
-                    logger_metrics = logger.get_current().dumpkvs().items()
-                    for k, v in [*interval_loss_metrics.items(), *logger_metrics]:
-                        if k == 'loss':
-                            tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
-                        if k in ['step', 'samples']:
-                            continue
-                        self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
+                if (completed_step % self.log_interval == 0
+                        or completed_step == start + 1
+                        or completed_step == self.num_steps):
+                    self._log_step(completed_step, log_file)
 
                 if self._should_validate(completed_step):
                     self.evaluate()
@@ -514,8 +514,41 @@ class TrainLoop:
 
                 self.step += 1
 
-                if completed_step == self.num_steps:
-                    break
+    def _open_training_log(self):
+        """Append-mode text handle for training.jsonl, local or blob save_dir."""
+        if '://' in self.save_dir:
+            return bf.BlobFile(bf.join(self.save_dir, 'training.jsonl'), 'a')
+        return open(pjoin(self.save_dir, 'training.jsonl'), 'a', encoding='utf-8')
+
+    def _epoch_batches(self):
+        """Training batches forever, one epoch of ``self.data`` at a time."""
+        while True:
+            tqdm.write(f'Starting a new epoch at step {self.total_step()}')
+            yield from self.data
+
+    def _log_step(self, completed_step, log_file):
+        """One console/TensorBoard report of the metrics accumulated since the
+        previous one, in the same shape ``train_autoencoder`` prints: a KV
+        table (interval means for the loss terms, logger means for lr /
+        grad_norm) followed by the ``step[n]: loss[x]`` line.
+
+        ``dumpkvs`` owns the table -- it writes the logger's configured output
+        formats, stdout included, and returns the same values -- so the
+        interval means are fed into the logger first to put every loss term in
+        that one table instead of printing a second one.
+        """
+        self._assert_optimizer_state_finite(completed_step)
+        record = {'step': completed_step, **self._flush_interval_loss_metrics()}
+        logger.logkvs(record)
+        record.update(logger.get_current().dumpkvs())
+        tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, record['loss']))
+        log_file.write(json.dumps(record) + '\n')
+        log_file.flush()
+        for key, value in record.items():
+            if key == 'step':
+                continue
+            self.train_platform.report_scalar(
+                name=key, value=value, iteration=completed_step, group_name='Loss')
 
     def _move_batch_to_device(self, batch):
         return batch.to(self.device, non_blocking=self.non_blocking)
@@ -742,7 +775,9 @@ class TrainLoop:
 
         completed_step = self.total_step() + 1
         metrics = {name: float((total / sample_count).item()) for name, total in sums.items()}
-        tqdm.write(f"val_step[{completed_step}]: loss[{metrics['loss']:.5f}] ({sample_count} clips)")
+        tqdm.write(f"eval_step[{completed_step}]: loss[{metrics['loss']:.5f}] "
+                   f'({sample_count} validation clips)')
+        self.console.writekvs(metrics)
         for name, value in metrics.items():
             self.train_platform.report_scalar(name=name, value=value, iteration=completed_step, group_name='Val')
 
@@ -785,7 +820,6 @@ class TrainLoop:
             # .parameters()).  Sync persistent buffers (running statistics) so
             # they are available in the EMA checkpoint at inference time.
             self._sync_ema_persistent_buffers()
-        self.log_step()
 
     def forward_backward(self, batch, cond, epoch):
         self.mp_trainer.zero_grad()
@@ -1050,11 +1084,6 @@ class TrainLoop:
             param_group['lr'] = lr
         self.lr_scheduler._last_lr = lrs
         logger.log(f"LR scheduler seeked to step {step}: lr={lrs[0]:.3e}")
-
-    def log_step(self):
-        logger.logkv("step", self.step + self.resume_step)
-        logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
-
 
     def ckpt_file_name(self, completed_step):
         return f"model{completed_step:09d}.pt"

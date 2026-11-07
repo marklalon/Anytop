@@ -20,6 +20,8 @@ _torch.backends.cuda.enable_mem_efficient_sdp(True)
 _torch.backends.cuda.enable_cudnn_sdp(True)
 _torch.backends.cuda.enable_flash_sdp(True)
 
+from tqdm import tqdm
+
 from utils.fixseed import fixseed
 from utils.parser_util import (
     CKPT_VERSION,
@@ -117,22 +119,22 @@ def prepare_save_dir(args):
         if not getattr(args, 'resume_checkpoint', ''):
             latest_checkpoint = find_latest_checkpoint(save_dir, prefix='model')
             if not latest_checkpoint:
-                print(f'[INFO] auto_resume was requested but no checkpoint was found in save_dir [{save_dir}]. Starting fresh training.')
+                tqdm.write(f'[INFO] auto_resume was requested but no checkpoint was found in save_dir [{save_dir}]. Starting fresh training.')
                 args.resume_checkpoint = ''
                 clear_training_artifacts(save_dir, confirm=True)
             else:
                 args.resume_checkpoint = latest_checkpoint
                 if not getattr(args, 'load_optimizer_state', False):
                     args.load_optimizer_state = True
-                print(f'[INFO] Auto-resuming AnyTop from {args.resume_checkpoint}')
+                tqdm.write(f'[INFO] Auto-resuming AnyTop from {args.resume_checkpoint}')
         else:
             if not getattr(args, 'load_optimizer_state', False):
                 args.load_optimizer_state = True
-            print(f'[INFO] Auto-resuming AnyTop from {args.resume_checkpoint}')
+            tqdm.write(f'[INFO] Auto-resuming AnyTop from {args.resume_checkpoint}')
     elif not getattr(args, 'resume_checkpoint', ''):
         args.resume_checkpoint = ''
         clear_training_artifacts(save_dir, confirm=True)
-    print(f'[INFO] save_dir: {save_dir}')
+    tqdm.write(f'[INFO] save_dir: {save_dir}')
     return save_dir
 
 def _normalized_action_group(raw):
@@ -252,9 +254,9 @@ def bootstrap_action_conditioning(args):
     """
     bundle = load_action_conditioning(getattr(args, 'action_word_embeddings', None))
     args.action_conditioning = bundle
-    print(f"[action-label] word table {bundle.source}")
-    print(f"[action-label] embedding_fingerprint             {bundle.embedding_fingerprint}")
-    print(f"[action-label] conditioning_contract_fingerprint {bundle.conditioning_contract_fingerprint}")
+    tqdm.write(f"[action-label] word table {bundle.source}")
+    tqdm.write(f"[action-label] embedding_fingerprint             {bundle.embedding_fingerprint}")
+    tqdm.write(f"[action-label] conditioning_contract_fingerprint {bundle.conditioning_contract_fingerprint}")
     return bundle
 
 
@@ -275,7 +277,7 @@ def bootstrap_species_descriptor_table(args, cond_file, save_dir):
         table = build_species_descriptor_table(t5_name=cond_t5_name(load_cond(cond_file)))
         shutil.copy2(table.source, shipped)
     args.species_descriptor_table = table
-    print(f"[species] descriptor table {table.source} ({len(table.descriptors)} descriptors)")
+    tqdm.write(f"[species] descriptor table {table.source} ({len(table.descriptors)} descriptors)")
     return table
 
 
@@ -356,13 +358,12 @@ def run_training(args):
     # Print motion count in train split
     train_split = getattr(args, 'train_split', 'train')
     num_motions = len(data.dataset)
-    print(f"[INFO] Train split '{train_split}': {num_motions} motions")
+    tqdm.write(f"[INFO] Train split '{train_split}': {num_motions} motions")
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
-    print(f'[model] parameters: {sum(p.numel() for p in model.parameters())}')
+    tqdm.write(f'[model] parameters: {sum(p.numel() for p in model.parameters()):,}')
     model.to(dist_util.dev())
     ml_platform.watch_model(model)
-    print("Training...")
     TrainLoop(args, ml_platform, model, diffusion, data).run_loop()
     ml_platform.close()
 

@@ -54,6 +54,16 @@ class _Platform:
         self.scalars.append((group_name, name, value, iteration))
 
 
+class _Console:
+    """Stands in for the HumanOutputFormat table writer."""
+
+    def __init__(self):
+        self.tables = []
+
+    def writekvs(self, kvs):
+        self.tables.append(dict(kvs))
+
+
 def _stub(eval_batches, use_ema, val_t_strata=4):
     stub = TrainLoop.__new__(TrainLoop)
     stub.args = SimpleNamespace(val_t_strata=val_t_strata)
@@ -64,6 +74,7 @@ def _stub(eval_batches, use_ema, val_t_strata=4):
     stub.model_avg = _Model(2.0) if use_ema else None
     stub.diffusion = _Diffusion()
     stub.train_platform = _Platform()
+    stub.console = _Console()
     stub.eval_data = eval_batches
     stub.step, stub.resume_step = 41, 0
     return stub
@@ -84,6 +95,9 @@ def test_evaluate_logs_per_clip_mean_for_online_model_only():
     logged = {name: value for group, name, value, _ in stub.train_platform.scalars if group == "Val"}
     assert set(logged) == {"loss", "l_simple"}
     assert all(it == 42 for _, _, _, it in stub.train_platform.scalars)
+    # The console table reports exactly the scalars, as train_autoencoder does.
+    assert len(stub.console.tables) == 1
+    assert set(stub.console.tables[0]) == set(logged)
     # Per clip and per stratum, the mean over clips and strata: recompute it
     # from the (t, noise) draws the pass actually made.
     expected = {}
