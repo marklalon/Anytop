@@ -585,8 +585,9 @@ def add_generate_options(parser):
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename), or if --cond_path points at a cond file "
                             "containing a single species (that species is used). Otherwise "
-                            "required for pure-random generation. When both flags are provided "
-                            "the reference motion must use the same species and skeleton.")
+                            "required for pure-random generation. An explicit target selects the "
+                            "skeleton for .npy reference features regardless of their filename; "
+                            "the joint count and joint order must match the target.")
     group.add_argument("--sampling_method", default="ddpm", choices=["p", "ddpm", "ddim"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (default). 'ddim' = DDIM. "
                             "Both cost the same at the same --sampling_steps. DDIM is deterministic "

@@ -72,7 +72,7 @@ from sample.reference_motion import (
     _REFERENCE_MOTION_PREPROCESS_SUFFIXES,
     _extract_edit_reference,
     _prepare_img2img_reference_bundle,
-    _resolve_reference_source_type,
+    _validate_edit_reference_shape,
     _validate_reference_motion_path,
 )
 from sample.sampling import _sample_batch
@@ -406,15 +406,14 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
-    # --reference_motion: infer source type from filename, look up in cond the same way.
-    # An edit (skip_timesteps) needs source == target.
+    # Infer from the reference filename only when no target was selected. Bare
+    # .npy arrays carry no species identity; AE transfers can retain source names.
     explicit_object_type = args.object_type
 
     # A --cond_path whose file holds exactly one species makes --object_type
     # redundant: there is only one possible target, so use it (e.g.
     # `--cond_path outputs/new_skeleton_horse/cond.npy --loop`). With a
-    # --reference_motion this is the target only; the reference's source type
-    # is still resolved from the file itself.
+    # --reference_motion this selects the skeleton used to interpret its features.
     if (
         not explicit_object_type
         and str(getattr(args, 'cond_path', '') or '').strip()
@@ -515,48 +514,11 @@ def main(args=None, cond_dict=None, runtime=None):
     else:
         target_type = None  # unreachable
 
-    # 2) Resolve reference source type (edit needs it equal to the target)
-    # Raw animation references (.fbx/.glb/.gltf) are cond-free (source from file);
-    # .npy references need a source cond entry for their T-pose/skeleton.
+    # Raw references carry their own skeleton; .npy features use the selected
+    # target cond. Validate their actual joint count when loading below.
     reference_is_raw_anim = bool(reference_motion_path) and (
         reference_motion_suffix in _REFERENCE_MOTION_PREPROCESS_SUFFIXES
     )
-    source_type = None
-    _default_cond_cache = None
-    source_type_used_target_fallback = False
-    blind_type = None
-
-    if reference_motion_path and not reference_is_raw_anim:
-        source_type, _default_cond_cache, blind_type, source_type_used_target_fallback = _resolve_reference_source_type(
-            reference_motion_path,
-            cond_dict,
-            target_type=target_type,
-            # The checkpoint's own snapshot, not a hard-coded dataset directory.
-            default_cond_file=_checkpoint_cond_path(getattr(args, 'model_path', '')),
-            actual_cond_file=actual_cond_file,
-        )
-        if source_type is None and blind_type:
-            available = ', '.join(sorted(cond_dict.keys()))
-            if _default_cond_cache:
-                default_available = ', '.join(sorted(_default_cond_cache.keys()))
-                sys.exit(
-                    f"ERROR: source type '{blind_type}' (inferred from reference motion "
-                    f"{reference_motion_path}) not found in any cond file. "
-                    f"Available in user cond: {available}\n"
-                    f"Available in default cond: {default_available}"
-                )
-            sys.exit(
-                f"ERROR: source type '{blind_type}' (inferred from reference motion "
-                f"{reference_motion_path}) not found in cond file. "
-                f"Available: {available}"
-            )
-    if reference_motion_path and not reference_is_raw_anim:
-        if source_type.upper() != target_type.upper():
-            sys.exit(
-                f"ERROR: --skip_timesteps edit the reference on the "
-                f"target skeleton, so it must be the same species: reference is '{source_type}', "
-                f"target is '{target_type}'. Use the motion autoencoder for cross-skeleton transfer."
-            )
 
     object_type = target_type  # downstream code keeps reading `object_type`
     max_joints = len(np.asarray(cond_dict[object_type]['parents']))
@@ -577,12 +539,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"from file, cond-free; mode=edit)"
             )
         else:
-            if source_type_used_target_fallback:
-                print(
-                    f"Reference motion object_type inference was invalid"
-                    f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
-                )
-            print(f"Reference motion object_type: {source_type or target_type}")
+            print(f"Reference motion interpreted on target skeleton: {target_type}")
 
     print(f'\nSampling object_type: {object_type}  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
@@ -677,10 +634,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
     if effective_reference_path:
         ref_features_full = np.load(effective_reference_path).astype(np.float32)
-        if ref_features_full.ndim != 3:
-            raise ValueError(
-                f"Reference motion must have shape (T, J, F), got {ref_features_full.shape}"
-            )
+        _validate_edit_reference_shape(ref_features_full, object_type, cond_dict[object_type])
         R = int(ref_features_full.shape[0])
         max_reference_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
         if R > max_reference_frames:

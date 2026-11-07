@@ -163,6 +163,61 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)
 
 
+@pytest.mark.parametrize("selection", ["explicit", "filename", "single_cond"])
+def test_generate_npy_edit_uses_selected_target(tmp_path, monkeypatch, selection):
+    from types import SimpleNamespace
+    import sample.generate as generate
+
+    human = "integrate_20260924/MXO_Human"
+    wolf = "integrate_20260924/ORA_SnakeWolf"
+    cond_dict = {human: _make_full_cond_entry(53), wolf: _make_full_cond_entry(37)}
+    target = wolf if selection == "filename" else human
+    if selection == "single_cond":
+        cond_dict = {human: cond_dict[human]}
+    reference = tmp_path / "ORA_SnakeWolf_Walk_reconstruction.npy"
+    np.save(reference, _synthetic_cycle(50, joints=len(cond_dict[target]['parents'])))
+    args = SimpleNamespace(
+        seed=0, reference_motion=str(reference), skip_timesteps=5,
+        object_type="MXO_Human" if selection == "explicit" else None,
+        cond_path="custom_cond.npy" if selection == "single_cond" else None,
+        model_path="unused.pt", output_dir=str(tmp_path / "output"),
+        num_frames=None, loop="off", batch_size=1,
+    )
+    runtime = SimpleNamespace(
+        opt=SimpleNamespace(fps=30, max_joints=53), cond_dict=cond_dict,
+        actual_cond_file="unused_cond.npy", model=SimpleNamespace(feature_len=12),
+        diffusion=None, sampling_method="ddpm", sampling_steps=10, amp_dtype="fp32",
+    )
+    monkeypatch.setattr(generate, 'prepare_generation_runtime', lambda *a, **kw: runtime)
+    monkeypatch.setattr(generate, '_checkpoint_native_num_frames', lambda *a: 60)
+    monkeypatch.setattr(generate, '_resolve_action_condition', lambda *a: None)
+
+    class ReferencePrepared(Exception):
+        pass
+
+    def capture_reference(path, target_type, target_cond, **kwargs):
+        assert target_type == target
+        assert target_cond is cond_dict[target]
+        bundle = _prepare_img2img_reference_bundle(path, target_type, target_cond, **kwargs)
+        assert bundle['reference_motion'].shape == (1, len(target_cond['parents']), 12, 60)
+        raise ReferencePrepared
+
+    monkeypatch.setattr(generate, '_prepare_img2img_reference_bundle', capture_reference)
+    with pytest.raises(ReferencePrepared):
+        generate.main(args)
+
+
+@pytest.mark.parametrize("reference_joints", [2, 4])
+def test_reference_bundle_rejects_wrong_joint_count(reference_joints):
+    with pytest.raises(ValueError, match=rf"has {reference_joints} joints.*requires 3"):
+        _prepare_img2img_reference_bundle(
+            reference_motion_path="Horse_Walk.npy", target_type="Horse",
+            target_cond=_make_full_cond_entry(3), max_joints=3,
+            target_feature_len=12, batch_size=1, requested_output_frame_count=60,
+            preloaded_features=np.zeros((40, reference_joints, 12), dtype=np.float32),
+        )
+
+
 def _synthetic_cycle(period: int, joints: int = 3, *, closing_key: bool = False) -> np.ndarray:
     """(T, J, 12) HML clip running one sine cycle over ``period`` frames, with
     velocity channels that are the true frame deltas and a wrap-delta terminal

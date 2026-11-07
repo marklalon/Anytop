@@ -11,51 +11,25 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     stored_to_working,
 )
 from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
-from sample.generation_runtime import (
-    _load_default_cond_cache,
-    _lookup_object_type_case_insensitive,
-)
-from data_loaders.truebones.truebones_utils.dataset_sources import species_lookup_map
-from utils.misc import infer_object_type_from_filename
 
 
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
 
 
-def _resolve_reference_source_type(
-    reference_motion_path,
-    cond_dict,
-    *,
-    target_type=None,
-    default_cond_file=None,
-    actual_cond_file=None,
-):
-    # Match the filename against the cond's own species first: only that knows how
-    # many leading tokens are the species name, so a multi-token species
-    # ("FEP_MagmaDemon_Attack01_1.npy") resolves whole instead of to its pack
-    # prefix. The blind parse stays as the fallback for a source that lives only
-    # in the checkpoint's default cond, which is searched below.
-    source_type = infer_object_type_from_filename(
-        reference_motion_path,
-        valid_types=species_lookup_map(cond_dict),
-    )
-    blind_type = source_type or infer_object_type_from_filename(
-        reference_motion_path,
-        valid_types=None,
-    )
-    default_cond_cache = None
-
-    if source_type is None and blind_type and default_cond_file and actual_cond_file:
-        default_cond_cache = _load_default_cond_cache(default_cond_file, actual_cond_file)
-        if default_cond_cache:
-            source_type = _lookup_object_type_case_insensitive(default_cond_cache.keys(), blind_type)
-
-    used_target_fallback = False
-    if source_type is None and target_type is not None:
-        source_type = target_type
-        used_target_fallback = True
-
-    return source_type, default_cond_cache, blind_type, used_target_fallback
+def _validate_edit_reference_shape(features, target_type, target_cond):
+    """A bare feature array has no species metadata; validate its target layout."""
+    if features.ndim != 3:
+        raise ValueError(
+            f"Reference motion must have shape (T, J, F), got {features.shape}"
+        )
+    target_joints = len(target_cond['parents'])
+    if features.shape[1] != target_joints:
+        raise ValueError(
+            f"Reference motion has {features.shape[1]} joints, but target "
+            f"'{target_type}' requires {target_joints}. Editing requires features "
+            "on the target skeleton in the same joint order. Use the motion "
+            "autoencoder for cross-skeleton transfer."
+        )
 
 
 def _validate_reference_motion_path(reference_motion_path):
@@ -91,10 +65,7 @@ def _prepare_img2img_reference_bundle(
         ref_raw = np.asarray(preloaded_features, dtype=np.float32)
     else:
         ref_raw = stored_to_working(np.load(reference_motion_path))
-    if ref_raw.ndim != 3:
-        raise ValueError(
-            f"Reference motion must have shape (T, J, F), got {ref_raw.shape}"
-        )
+    _validate_edit_reference_shape(ref_raw, target_type, target_cond)
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
     if internal_num_frames is not None:
