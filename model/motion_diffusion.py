@@ -51,15 +51,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.input_feats = len(MODEL_CHANNELS)
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.value_emb=kargs.get('value_emb', False)
-        self.cross_limb=kargs.get('cross_limb', True)
-        self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
-        self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
-        self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
-        # --species_cond: the species code (body plan + variant) FiLM-modulates
-        # each joint-name embedding in InputProcess; that is its only entry point.
-        # It is applied on every row, with no CFG drop or null mode of its own.
-        self.species_cond=bool(kargs.get('species_cond', False))
         # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
         self.joint_name_drop_prob=float(kargs.get('joint_name_drop_prob', 0.0))
@@ -77,20 +69,15 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         # only, so a label's head and direction axes are literally unchanged by
         # however many modifiers it also spells, and unseen (action x direction)
         # combinations compose out of word vectors the model has already seen.
-        self.action_label_cond = bool(kargs.get('action_label_cond', False))
         self.action_label_cfg_drop_prob = float(kargs.get('action_label_cfg_drop_prob', 0.2))
         if not 0.0 <= self.action_label_cfg_drop_prob <= 1.0:
             raise ValueError(
                 f"action_label_cfg_drop_prob must be in [0, 1], got {self.action_label_cfg_drop_prob}"
             )
-        # The action token also gets a multiplicative pathway through the
-        # decoder on top of the additive one (GraphMotionDecoder owns the head).
-        # It exists exactly when there is a label to drive it.
-        self.action_label_adaln = self.action_label_cond
-        self.input_process = InputProcess(
-            self.input_feats, self.latent_dim, t5_out_dim,
-            species_cond=self.species_cond,
-        )
+        # The species code (body plan + variant) FiLM-modulates each joint-name
+        # embedding in InputProcess; that is its only entry point. It is applied
+        # on every row, with no CFG drop or null mode of its own.
+        self.input_process = InputProcess(self.input_feats, self.latent_dim, t5_out_dim)
         # y['is_loop'] (0/1, whether the window is a closed cycle) is NOT summed
         # into the condition embedding. It selects the loop time encoding
         # (_frame_position_embedding, _tempo_frame_embedding): a closed window
@@ -120,31 +107,26 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         # has no token of its own: it enters only as the period of the
         # circular table (T / k) and of the loop tempo (L / k), so the model
         # can read it as time only.
-        if self.action_label_cond:
-            # Project the concatenated slot channels and add the result to the
-            # timestep token. One
-            # Linear over the concatenation IS one Linear per channel block,
-            # summed, so each channel's relative scale is learned rather than
-            # being some offline budget we picked. Additive and linear is enough:
-            # direction is linearly readable out of the T5 vectors. If a trained
-            # model still under-follows the prompt, raise --action_label_cfg_scale
-            # (no retrain needed).
-            # The direction slot is a code slot and is read on its
-            # SYNTHETIC_CODE_DIM axes only: see compact_slot_channels.
-            self._init_action_conditioning(kargs.get('action_conditioning'), t5_out_dim)
-            self.action_label_projection = nn.Sequential(
-                nn.Linear(projection_input_dim(t5_out_dim), self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-            # Learned unconditional embedding substituted when the condition is
-            # hard-dropped. Zero-init so the unconditional mode starts identical
-            # to a model with no action conditioning.
-            self.action_label_null_emb = nn.Parameter(torch.zeros(self.latent_dim))
-        else:
-            self.action_label_projection = None
-            self.action_label_null_emb = None
-            self.action_conditioning_metadata = None
+        # Action label: project the concatenated slot channels and add the
+        # result to the timestep token. One
+        # Linear over the concatenation IS one Linear per channel block,
+        # summed, so each channel's relative scale is learned rather than
+        # being some offline budget we picked. Additive and linear is enough:
+        # direction is linearly readable out of the T5 vectors. If a trained
+        # model still under-follows the prompt, raise --action_label_cfg_scale
+        # (no retrain needed).
+        # The direction slot is a code slot and is read on its
+        # SYNTHETIC_CODE_DIM axes only: see compact_slot_channels.
+        self._init_action_conditioning(kargs.get('action_conditioning'), t5_out_dim)
+        self.action_label_projection = nn.Sequential(
+            nn.Linear(projection_input_dim(t5_out_dim), self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
+        # Learned unconditional embedding substituted when the condition is
+        # hard-dropped. Zero-init so the unconditional mode starts identical
+        # to a model with no action conditioning.
+        self.action_label_null_emb = nn.Parameter(torch.zeros(self.latent_dim))
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -153,11 +135,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
                                                             activation=self.activation)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb,
-                                                        cross_limb=self.cross_limb,
-                                                        cross_limb_latents=self.cross_limb_latents,
-                                                        cross_limb_dim=self.cross_limb_dim,
-                                                        cross_limb_last_n=self.cross_limb_last_n,
-                                                        action_label_adaln=self.action_label_adaln,
+                                                        action_label_adaln=True,
                                                         last_layer_ff=self.last_layer_ff)
             
         
@@ -188,12 +166,9 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         action_label_token = self._build_action_label_token(y, bs, x.device, x.dtype)
-        if action_label_token is not None:
-            timesteps_emb = timesteps_emb + action_label_token
+        timesteps_emb = timesteps_emb + action_label_token
 
-        species_code = (
-            self._coerce_species_code(y, bs, x.device, x.dtype) if self.species_cond else None
-        )
+        species_code = self._coerce_species_code(y, bs, x.device, x.dtype)
         # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
         # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
         # the always-present leading token, so joint j lives at slot j+1 and the
@@ -240,7 +215,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
             loop_cycles=loop_cycles,
             # Same token the additive path summed in above, so a CFG-dropped row
             # modulates by the null embedding rather than skipping the head.
-            action_adaln_cond=action_label_token if self.action_label_adaln else None,
+            action_adaln_cond=action_label_token,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output
@@ -258,8 +233,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
 # in the case of GMDM, the input process is as follows:
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, latent_dim, t5_output_dim,
-                 species_cond=False):
+    def __init__(self, input_feats, latent_dim, t5_output_dim):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -273,7 +247,7 @@ class InputProcess(nn.Module):
         # loss both exclude it), so sharing the zero row costs nothing, and it
         # leaves inference a parameter-free way to feed a joint with no name.
         # The mask is drawn by MotionDiffusion (_sample_joint_name_drop).
-        # When --species_cond, the species code FiLM-modulates each per-joint
+        # The species code FiLM-modulates each per-joint
         # name embedding: gamma/beta are produced from the *concatenation* of
         # that joint's embedding and the species code, so the modulation is a
         # function of the species x joint interaction.
@@ -292,10 +266,9 @@ class InputProcess(nn.Module):
             nn.Linear(t5_output_dim + species_code_dim(t5_output_dim), self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, 2 * t5_output_dim),
-        ) if species_cond else None
-        if self.species_film_j is not None:
-            nn.init.zeros_(self.species_film_j[-1].weight)
-            nn.init.zeros_(self.species_film_j[-1].bias)
+        )
+        nn.init.zeros_(self.species_film_j[-1].weight)
+        nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
         # Structural channel: the joint's place in the topology (its position
         # along a branch-free run, whether it is a leaf, its subtree size, its
@@ -331,7 +304,7 @@ class InputProcess(nn.Module):
         present flag included.
 
         ``species_code`` ([B, species_code_dim]) drives the species FiLM and is
-        required exactly when it exists; FiLM is applied on every row.
+        required; FiLM is applied on every row.
 
         ``frame_pos_emb`` ([T, B, D], MotionDiffusion._frame_position_embedding) is the
         frame-position signal; None adds the absolute frame PE to every sample.
@@ -372,22 +345,17 @@ class InputProcess(nn.Module):
                 joint_name_drop.to(joints_clean.device).unsqueeze(-1), 0.0
             )
         joints_embedded_names = joints_clean
-        if self.species_film_j is not None:
-            if species_code is None:
-                raise ValueError(
-                    "species_cond is enabled but species_code was not passed to "
-                    "InputProcess (expected y['species_code'])."
-                )
-            # FiLM and projection read the same names after whole-joint dropout.
-            # joints_embedded_names: [B, J, t5]; species_code: [B, code] -> [B, J, code]
-            species_broadcast = species_code.to(device=device, dtype=joints_embedded_names.dtype).unsqueeze(1).expand(-1, joints_embedded_names.shape[1], -1)
-            gamma_residual, beta = run_in_fp32(
-                self.species_film_j, torch.cat([joints_embedded_names, species_broadcast], dim=-1)
-            ).chunk(2, dim=-1)
-            modulated = (1.0 + gamma_residual) * joints_embedded_names + beta
-            joints_embedded_names = modulated
-        elif species_code is not None:
-            raise ValueError("species_code was passed but this InputProcess has no species FiLM.")
+        if species_code is None:
+            raise ValueError(
+                "species_code was not passed to InputProcess (expected y['species_code'])."
+            )
+        # FiLM and projection read the same names after whole-joint dropout.
+        # joints_embedded_names: [B, J, t5]; species_code: [B, code] -> [B, J, code]
+        species_broadcast = species_code.to(device=device, dtype=joints_embedded_names.dtype).unsqueeze(1).expand(-1, joints_embedded_names.shape[1], -1)
+        gamma_residual, beta = run_in_fp32(
+            self.species_film_j, torch.cat([joints_embedded_names, species_broadcast], dim=-1)
+        ).chunk(2, dim=-1)
+        joints_embedded_names = (1.0 + gamma_residual) * joints_embedded_names + beta
         joints_embedded_names = run_in_fp32(self.text_embedding, joints_embedded_names)
         # The original motion path adds names before converting structure/rest:
         # that add promotes its AMP residual to fp32. Preserve the conversion

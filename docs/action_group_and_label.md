@@ -205,7 +205,7 @@ timestep_emb += token
 
 - `active`：CFG 的硬丢弃掩码（训练时按概率采样，推理时可强制 False）。
 - `valid`：该行是否真有标签（空标签 = 无条件）。无标签的行与被丢弃的行走同一条 null 路径，所以推理时不给 `--action_label` 自动落在无条件模态。
-- **AdaLN（有 `--action_label_cond` 即有，不是开关）**：另用一个零初始化的头，把 action token 变成**每层** temporal 与 feed-forward 分支输入的逐通道 scale / shift。加性 token 保留；AdaLN 补的是加性路径表达不了的乘性增益——两个标签共享同一槽（向量近乎平行）时，仍能产生不同动作。一个头服务所有层；其隐藏宽度固定为 `latent_dim`。
+- **AdaLN（始终存在，不是开关）**：另用一个零初始化的头，把 action token 变成**每层** temporal 与 feed-forward 分支输入的逐通道 scale / shift。加性 token 保留；AdaLN 补的是加性路径表达不了的乘性增益——两个标签共享同一槽（向量近乎平行）时，仍能产生不同动作。一个头服务所有层；其隐藏宽度固定为 `latent_dim`。
 
 ### 5.7 建模型时的硬门
 
@@ -267,7 +267,7 @@ python sample/generate.py ... --action_label "run, forward" --num_frames 40
 - 只接受受控 token；未知 token 是硬错误并列出合法词（词向量在 checkpoint 里，推理不跑 T5，自由文本无处可去）。
 - 可识别但不规范的写法被改写为规范拼写并提示；**主词顺序按用户给的保留**，它就是条件。
 - 省略方向时默认按训练统计补全，`--auto_direction off` 可关闭（规则见下）。标签只描述**动作**，不描述角色拿着什么：`attack, slash` 同时覆盖持械与徒手；器具本身就是动作时才写成修饰词。
-- 空 = 无条件（null embedding）。checkpoint 必须以 `--action_label_cond` 训练，否则带 label 直接退出。
+- 空 = 无条件（null embedding）。
 
 自动方向规则：
 

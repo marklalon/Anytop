@@ -1,7 +1,5 @@
-"""Precision policy from docs/fp16_vs_bf16_precision.md (A + B + C + D).
+"""Precision policy from docs/fp16_vs_bf16_precision.md (B + C + D).
 
-A: the cross-K sub-path is an fp32 island (it lives behind a zero-init gate, so
-   its gradients underflow fp16 while that gate is closed).
 B: the fp16 GradScaler's loss scale is capped, so it stops probing the overflow
    wall and manufacturing skipped steps.
 C: a loss-scale overflow is classified apart from a real gradient spike.
@@ -22,68 +20,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.fp16_util import GRAD_SCALER_MAX_SCALE, MixedPrecisionTrainer  # noqa: E402
 from model.motion_diffusion import run_in_fp32  # noqa: E402
-from model.motion_transformer import CrossLimbTemporalBlock  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM  # noqa: E402
 from train.training_loop import AMP_OVERFLOW_MAX_DUMPS, classify_grad_event  # noqa: E402
-
-
-class CrossKFp32IslandTests(unittest.TestCase):
-    """A: cross-K stays fp32 no matter what autocast the trunk runs in."""
-
-    def _block(self):
-        torch.manual_seed(0)
-        block = CrossLimbTemporalBlock(d_model=32, nhead=4, num_latents=4,
-                                       dropout=0.0, latent_width=16)
-        block.eval()
-        return block
-
-    def _run_and_record(self, block, dtype):
-        seen = {}
-
-        def record(name):
-            def hook(module, args, output):
-                tensor = output[0] if isinstance(output, tuple) else output
-                seen[name] = tensor.dtype
-            return hook
-
-        handles = [
-            block.cross_k_norm.register_forward_hook(record('cross_k_norm')),
-            block.cross_k_attn.register_forward_hook(record('cross_k_attn')),
-            block.proj_in.register_forward_hook(record('proj_in')),
-        ]
-        x = torch.randn(3, 2, 5, 32)
-        mask = torch.zeros(2, 5, dtype=torch.bool)
-        try:
-            with torch.autocast(device_type='cpu', dtype=dtype):
-                out = block(x, mask)
-        finally:
-            for handle in handles:
-                handle.remove()
-        return out, seen
-
-    def test_cross_k_runs_in_fp32_under_autocast(self):
-        block = self._block()
-        for dtype in (torch.bfloat16, torch.float16):
-            with self.subTest(dtype=str(dtype)):
-                _, seen = self._run_and_record(block, dtype)
-                self.assertEqual(seen['cross_k_norm'], torch.float32)
-                self.assertEqual(seen['cross_k_attn'], torch.float32)
-
-    def test_the_island_is_local_to_cross_k(self):
-        # The rest of the block must stay in autocast: pinning the whole block
-        # costs ~4% of a step, the island costs nothing.
-        block = self._block()
-        _, seen = self._run_and_record(block, torch.bfloat16)
-        self.assertEqual(seen['proj_in'], torch.bfloat16)
-
-    def test_no_autocast_is_unchanged(self):
-        block = self._block()
-        x = torch.randn(3, 2, 5, 32)
-        mask = torch.zeros(2, 5, dtype=torch.bool)
-        expected = block(x, mask)
-        again = block(x, mask)
-        self.assertTrue(torch.equal(expected, again))
-        self.assertEqual(expected.dtype, torch.float32)
 
 
 class LossScaleCapTests(unittest.TestCase):

@@ -863,10 +863,8 @@ def load_allowed_motion_names_per_source(
 def load_action_conditioning(action_word_embeddings_path=None):
     """Load and validate the frozen action-word table into one runtime bundle.
 
-    A dataset that trains with ``--action_label_cond`` and a training entry point
-    that builds the model must use the SAME bundle object, so this is normally
-    called once at the entry point and passed in; loading it here is the fallback
-    for a loader constructed on its own (evaluation hooks, tools).
+    The dataset and the model of one run must use the SAME bundle object, so
+    this is called once at the training entry point and passed to both.
 
     The table is vocabulary-global rather than per-source, so there is nothing to
     merge and no way for two dataset directories to disagree about what word id
@@ -1862,17 +1860,11 @@ class Truebones(data.Dataset):
             self.objects_subset != 'all' or kwargs.get('dataset_namespaces') or self.action_group
         ):
             raise ValueError('sample_filter cannot be combined with legacy dataset filters')
-        self.action_label_cond = bool(kwargs.get('action_label_cond', False))
         # One bundle per run: the training entry point builds it and hands the
         # same object to the model, so loader-side word ids and model-side word
-        # vectors are indices into one ordered vocabulary by construction.
+        # vectors are indices into one ordered vocabulary by construction. A
+        # loader built without one (tools, the autoencoder) emits no word ids.
         self.action_conditioning = kwargs.get('action_conditioning')
-        if self.action_label_cond and self.action_conditioning is None:
-            self.action_conditioning = load_action_conditioning(
-                kwargs.get('action_word_embeddings_path')
-            )
-        if not self.action_label_cond:
-            self.action_conditioning = None
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size

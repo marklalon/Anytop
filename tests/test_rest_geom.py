@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import data_loaders.truebones.data.dataset as dataset_module  # noqa: E402
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.reference import (  # noqa: E402
     REST_GEOM_COLUMNS, REST_GEOM_DIM, REST_GEOMETRY_DIM, REST_POSE_COLUMNS, reference_pose, rest_geometry,
 )
@@ -91,6 +92,10 @@ def test_rest_geom_drop_rates():
     assert abs(float(model._sample_rest_geom_drop(256, 8, torch.device('cpu')).float().mean()) - 0.5) < 0.05
 
 
+def _species(names):
+    return torch.zeros(names.shape[0], species_code_dim(names.shape[-1]))
+
+
 def test_dropped_joints_read_as_absent():
     model = _make_model()
     ip = model.input_process.eval()
@@ -100,8 +105,8 @@ def test_dropped_joints_read_as_absent():
     hidden = rest_geom.masked_fill(drop[:, :, None], 0.0)
     assert bool((hidden[drop][:, -1] == 0).all())
     with torch.no_grad():
-        dropped = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop)
-        reference = ip(x, hidden, names, None, struct)
+        dropped = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop, species_code=_species(names))
+        reference = ip(x, hidden, names, None, struct, species_code=_species(names))
     assert torch.equal(dropped, reference)
 
 
@@ -111,8 +116,8 @@ def test_fully_dropped_rest_geom_hides_the_rest():
     struct = _joint_struct()
     drop = torch.ones(rest_geom.shape[:2], dtype=torch.bool)
     with torch.no_grad():
-        a = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop)
-        b = ip(x, torch.randn_like(rest_geom), names, None, struct, rest_geom_drop=drop)
+        a = ip(x, rest_geom, names, None, struct, rest_geom_drop=drop, species_code=_species(names))
+        b = ip(x, torch.randn_like(rest_geom), names, None, struct, rest_geom_drop=drop, species_code=_species(names))
     torch.testing.assert_close(a, b, rtol=0, atol=0)
 
 
@@ -123,8 +128,8 @@ def test_every_frame_token_reads_the_rest_geometry():
     x, rest_geom, names = _joint_cond_inputs()
     struct = _joint_struct()
     with torch.no_grad():
-        a = ip(x, rest_geom, names, None, struct)
-        b = ip(x, rest_geom + 1.0, names, None, struct)
+        a = ip(x, rest_geom, names, None, struct, species_code=_species(names))
+        b = ip(x, rest_geom + 1.0, names, None, struct, species_code=_species(names))
     assert a.shape[0] == x.shape[-1]
     assert bool(((a - b).abs().flatten(1).amax(1) > 0).all())
 

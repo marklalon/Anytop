@@ -113,9 +113,7 @@ def _resolve_generation_cond_path(args):
 
 
 def _load_checkpoint_species_table(args):
-    """The descriptor table next to the checkpoint, or None when species cond is off."""
-    if not getattr(args, 'species_cond', False):
-        return None
+    """The descriptor table next to the checkpoint."""
     table = load_checkpoint_species_descriptor_table(args.model_path, 'the checkpoint')
     if table.embedding_dim != int(args.t5_out_dim):
         raise ValueError(
@@ -127,8 +125,7 @@ def _load_checkpoint_species_table(args):
 
 def bind_species_table(species_table, cond_dict, cond_source):
     """Condition every cond entry on the checkpoint's table row for its species_tags."""
-    if species_table is not None:
-        bind_cond_species_embs(cond_dict, species_table, f"cond {cond_source}")
+    bind_cond_species_embs(cond_dict, species_table, f"cond {cond_source}")
 
 
 def _load_generation_cond(args, opt, cond_dict=None):

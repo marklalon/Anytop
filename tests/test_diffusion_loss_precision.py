@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.canonical_features import CANONICAL_STAT_LEN, MODEL_CHANNELS, REST_LENGTH_SCALE_FLOOR  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
@@ -548,7 +549,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -560,6 +560,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_geom": torch.randn(1, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            "species_code": torch.zeros(1, species_code_dim(512)),
             "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the output frame.
             "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
@@ -575,8 +576,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
     def test_anytop_forward_leaves_temporal_attention_unmasked(self):
         # Temporal self-attention is full: no window, so nothing but the spatial
-        # mask reaches the decoder. The cross-limb block used to receive the same
-        # window as a separate template argument -- it must still run without one.
+        # mask reaches the decoder.
         model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
@@ -585,7 +585,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -597,6 +596,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_geom": torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+            "species_code": torch.zeros(2, species_code_dim(512)),
             "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the output frame.
             "canonical_feature_mean": torch.zeros(12, dtype=torch.float32),
@@ -614,10 +614,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(
             capture_decoder.last_kwargs["spatial_mask"].shape, (2, model.num_heads, 4, 4))
 
-    def test_anytop_runs_the_real_cross_limb_decoder_without_a_temporal_mask(self):
+    def test_anytop_runs_the_real_decoder_without_a_temporal_mask(self):
         # The capture decoder above never enters the attention blocks; this one
-        # runs them, so a cross-limb block that still expected a window template
-        # (or an attention that rejected attn_mask=None) would fail here.
+        # runs them, so an attention that rejected attn_mask=None would fail here.
         model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
@@ -626,7 +625,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=2,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         model.eval()
 
@@ -636,6 +634,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_geom": torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+            "species_code": torch.zeros(2, species_code_dim(512)),
             "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             "graph_dist": torch.zeros(2, 4, 4, dtype=torch.int64),
             "joints_relations": torch.zeros(2, 4, 4, dtype=torch.int64),

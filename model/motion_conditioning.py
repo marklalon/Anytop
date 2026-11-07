@@ -227,8 +227,6 @@ class MotionConditioningMixin:
         certified against the hash the checkpoint's own contract commits to,
         never assumed to equal what a sidecar on this host holds today.
         """
-        if not self.action_label_cond:
-            return None
         validated = validate_action_conditioning_metadata(metadata, source=source)
         # "The weights loaded but the buffer did not" is the failure a reader has
         # to see, so the placeholder is ruled out before anything hashes it.
@@ -455,7 +453,7 @@ class MotionConditioningMixin:
 
 
     def _action_condition(self, y, batch_size, device, dtype):
-        """``(channels [B, S*D], active [B])`` for the action condition, or ``None``.
+        """``(channels [B, S*D], active [B])`` for the action condition.
 
         ``active`` folds together the CFG hard-drop mask and "does this row carry
         a label at all": a row with no label carries no action information, and
@@ -467,8 +465,6 @@ class MotionConditioningMixin:
         class of borrowed rows to route differently (auxiliary groups are
         retired -- with --action_group all every clip is simply in the corpus).
         """
-        if not self.action_label_cond:
-            return None
         resolved = self._action_slot_inputs(y, batch_size, device)
         if resolved is None:
             channels = torch.zeros(
@@ -491,13 +487,8 @@ class MotionConditioningMixin:
 
 
     def _build_action_label_token(self, y, batch_size, device, dtype):
-        """The action token added to the timestep embedding, or ``None`` when off."""
-        if self.action_label_projection is None:
-            return None
-        resolved = self._action_condition(y, batch_size, device, dtype)
-        if resolved is None:
-            return None
-        channels, action_active = resolved
+        """The action token added to the timestep embedding."""
+        channels, action_active = self._action_condition(y, batch_size, device, dtype)
         # An inactive row goes to the learned null rather than pushing the zero
         # vector through the projection, whose output there is an untrained region.
         null_emb = self.action_label_null_emb.to(device=device, dtype=dtype)
@@ -513,7 +504,7 @@ class MotionConditioningMixin:
         raw_species_code = y.get('species_code') if y is not None else None
         if raw_species_code is None:
             raise ValueError(
-                "species conditioning is enabled but y['species_code'] is missing; it is "
+                "y['species_code'] is missing; it is "
                 "bound from the species descriptor table (bind_cond_species_embs)."
             )
         species_code = torch.as_tensor(raw_species_code, device=device, dtype=dtype)

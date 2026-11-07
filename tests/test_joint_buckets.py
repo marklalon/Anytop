@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     JOINT_BUCKETS,
     MAX_JOINTS,
 )
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from model.motion_diffusion import MotionDiffusion  # noqa: E402
 
 
@@ -188,6 +189,7 @@ def _item(n_joints, max_joints, frames=3, seed=0):
         'clip',
         {
             'joint_struct': rng.standard_normal((n_joints, JOINT_STRUCT_DIM)).astype(np.float32),
+            'species_code': np.zeros(species_code_dim(T5), dtype=np.float32),
             'canonical_feature_mean': np.zeros(FEATS, dtype=np.float32),
             'canonical_feature_std': np.ones(FEATS, dtype=np.float32),
         },
@@ -219,8 +221,7 @@ class PaddingInvarianceTest(unittest.TestCase):
         torch.manual_seed(0)
         model = MotionDiffusion(
             max_joints=100, feature_len=FEATS, latent_dim=16, ff_size=32, num_layers=2,
-            num_heads=2, dropout=0.0, cross_limb=True, cross_limb_latents=3,
-            cross_limb_dim=8, t5_out_dim=T5,
+            num_heads=2, dropout=0.0, t5_out_dim=T5,
         )
         model.eval()
         return model

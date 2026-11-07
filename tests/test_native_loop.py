@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
@@ -177,7 +178,6 @@ class NativeLoopTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
 
         value = model._coerce_resample_speed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
@@ -419,7 +419,6 @@ class NativeLoopTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -430,6 +429,7 @@ class NativeLoopTests(unittest.TestCase):
             'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            'species_code': torch.zeros(2, species_code_dim(512)),
             'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the frame.
             'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
@@ -455,7 +455,7 @@ class NativeLoopTests(unittest.TestCase):
 
         D, H, J, T = 8, 2, 3, 6
         layer = GraphMotionDecoderLayer(D, H, dim_feedforward=16, dropout=0.0)
-        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=True, cross_limb_latents=2, cross_limb_dim=8)
+        dec = GraphMotionDecoder(layer, num_layers=1)
         seen = {}
 
         def stub(output, *a, **kw):
@@ -481,8 +481,6 @@ class NativeLoopTests(unittest.TestCase):
         self.assertEqual(tuple(seen['phase'].shape), (T, 2, D))
         self.assertTrue(torch.equal(seen['phase'][:, 0], circular))
         self.assertTrue(torch.equal(seen['phase'][:, 1], torch.zeros(T, D)))
-        # The cross-limb blocks get no time table of their own any more.
-        self.assertNotIn('cross_limb_time_embedding', seen['kwargs'])
 
 
 if __name__ == '__main__':

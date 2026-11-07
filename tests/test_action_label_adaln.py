@@ -29,6 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -49,7 +50,7 @@ from tests.action_label_test_utils import (  # noqa: E402
 NUM_LAYERS = 2
 
 
-def _model(bundle, action_label_cond=True, seed=7):
+def _model(bundle, seed=7):
     torch.manual_seed(seed)
     model = MotionDiffusion(
         max_joints=4,
@@ -59,11 +60,9 @@ def _model(bundle, action_label_cond=True, seed=7):
         num_layers=NUM_LAYERS,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=TEST_T5_DIM,
-        action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=0.0,
-        action_conditioning=bundle if action_label_cond else None,
+        action_conditioning=bundle,
     )
     model.eval()
     return model
@@ -80,6 +79,7 @@ def _y(labels):
         ),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, TEST_T5_DIM, dtype=torch.float32),
+        'species_code': torch.zeros(2, species_code_dim(TEST_T5_DIM)),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'graph_dist': torch.zeros(2, 4, 4, dtype=torch.int64),
         'joints_relations': torch.zeros(2, 4, 4, dtype=torch.int64),
@@ -128,9 +128,6 @@ class ActionAdaLNStartsAsIdentity(unittest.TestCase):
             head[-1].out_features,
             NUM_LAYERS * ACTION_ADALN_PARAMS_PER_LAYER * TEST_LATENT_DIM,
         )
-
-    def test_no_modulation_head_without_action_label_cond(self):
-        self.assertIsNone(_model(None, action_label_cond=False).seqTransDecoder.action_adaln)
 
 
 class ActionAdaLNCarriesTheLabel(unittest.TestCase):

@@ -90,15 +90,11 @@ def _fixed_validation_rng(device):
 
 # Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
 # suffix: the zero-init gates a residual or bias path is opened with
-# (cross-limb ``cross_k_scale`` and decoder ``temporal_phase_scale``) plus the
-# cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
-# i.e. toward closing the path it was learned to open. A name rule, not
+# (decoder ``temporal_phase_scale``). Decay pulls each of them back toward its
+# init, i.e. toward closing the path it was learned to open. A name rule, not
 # ``param.ndim == 1``: those scalars are ``torch.zeros(1)``, the same rank as
 # the LayerNorm affines that are NOT on this list.
 NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
-    '.cross_k_scale',
-    '.cross_k_norm.weight',
-    '.cross_k_norm.bias',
     '.temporal_phase_scale',
 )
 
@@ -282,7 +278,6 @@ class TrainLoop:
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
                 drop_last=False,
-                action_label_cond=getattr(self.args, 'action_label_cond', False),
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
                 species_table=getattr(self.args, 'species_descriptor_table', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
@@ -421,8 +416,6 @@ class TrainLoop:
         buffer-level half is bind_checkpoint_action_conditioning, which can only
         run once those buffers ARE the checkpoint's.
         """
-        if not getattr(unwrap_motion_diffusion_model(self.model), 'action_label_cond', False):
-            return
         action_conditioning = (metadata or {}).get('action_conditioning') or {}
         bundle = getattr(self.args, 'action_conditioning', None)
         if bundle is None:

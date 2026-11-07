@@ -241,7 +241,7 @@ fp16 run 是从 bf16 run 的 5000 步 checkpoint 续训的，两边在 5000–54
 
 | | 改动 | 落点 |
 |---|---|---|
-| A | cross-K 子路做成 fp32 孤岛 | [motion_transformer.py](../model/motion_transformer.py) `CrossLimbTemporalBlock.forward` |
+| A | cross-K 子路做成 fp32 孤岛 | `CrossLimbTemporalBlock.forward`（CKPT 61 起模型中无此模块） |
 | B | GradScaler 的 loss scale 封顶并从 2^15 开始，并记录 `amp_overflow` | [fp16_util.py](../diffusion/fp16_util.py) `GRAD_SCALER_MAX_SCALE`、`_cap_loss_scale`、`_optimize_amp` |
 | C | scaler 溢出与真实梯度尖峰分开分类、分开限额、分开文件名 | [training_loop.py](../train/training_loop.py) `classify_grad_event`、`AMP_OVERFLOW_MAX_DUMPS`、`_maybe_capture_spike` |
 | D | 广播型条件头固定 fp32 | [motion_diffusion.py](../model/motion_diffusion.py) `run_in_fp32` + 8 处调用 |

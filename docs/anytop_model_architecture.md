@@ -17,7 +17,6 @@
        GraphMotionDecoder × L
        ├─ graph-aware spatial attention
        ├─ full temporal attention
-       ├─ cross-limb temporal block（配置的后 N 层）
        └─ FFN
                     │
                     ▼
@@ -53,7 +52,6 @@ attention，最后由因子化注意力输出的预测就是干净动作。骨�
 
 在主干之上，模型还包含：
 
-- Perceiver 式 cross-limb temporal pathway，让不同肢体交换完整的运动节奏；
 - loop 条件、圆周相位、loop 数据增强与闭合损失；
 - per-joint structural channel 和 whole-joint name dropout；
 - per-joint species × joint FiLM（所有行开启）；
@@ -87,7 +85,6 @@ tokens [T+1, B, J, D]
 GraphMotionDecoder × L
   ├─ graph-aware spatial attention（每帧、跨全部关节）
   ├─ full temporal attention（每关节、跨全部 T+1 token）
-  ├─ cross-limb temporal block（配置的 active layers）
   └─ FFN
   │
   ▼
@@ -110,7 +107,7 @@ output projection（全部关节共用）
 ### 3.2 关节名称
 
 T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5。`cond.npy` 携带
-`joints_names_embs`；启用 `species_cond` 时，先经过第 4.1 节的 per-joint FiLM，
+`joints_names_embs`；先经过第 4.1 节的 per-joint FiLM，
 再由 `InputProcess.text_embedding` 投影到 latent width，并沿全部时间位置加到对应关节 token。
 
 `joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
@@ -151,7 +148,7 @@ timestep
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 所有行开启；无随机 drop |
+| species FiLM | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 所有行开启；无随机 drop |
 
 Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
 `species_code = [T5(body plan) || variant 轴]`（`species_descriptor_table.species_code`）；
@@ -243,7 +240,7 @@ x + embedded timestep/conditions
   → [action AdaLN on the branch input] → FFN + residual + norm
 ```
 
-方括号里的 AdaLN 只在 `--action_label_cond` 下存在（见 §4.2）。
+方括号里的 action AdaLN 见 §4.2。
 
 该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
 基类的 `self_attn` 换成 graph/temporal 两条路径，`multihead_attn` 已删除。
@@ -284,37 +281,6 @@ embedding 只进入 attention score、不进入 value/output，注意力走 PyTo
 Temporal attention 把张量视为 `[T+1, B*J, D]`，同一关节的每个时间 token 可以看到整个
 窗口，包括 rest-pose token。窗口就是内部帧数加一，没有 causal、local 或 loop attention
 mask。
-
-### 5.3 Cross-limb temporal block
-
-基础的因子化 spatial/temporal attention 没有一条让“某条腿的完整时间轨迹”直接观察
-“另一条腿的完整时间轨迹”的短路径。Cross-limb block 用 K 个 learned latents 补上它：
-
-```text
-每帧全部 joints --cross-in--> K 个全身 latents
-全身 latents ------时间自注意--> 跨时间节奏上下文
-每帧全部 joints <--cross-out--- K 个全身 latents
-```
-
-该路径在窄 bottleneck `cross_limb_dim` 中运行，只在部分层启用，每个启用的层有独立 block；
-latent 数量与维度由配置决定。
-
-latent **没有自己的时间表**。每帧所有关节 token 都带着 InputProcess 写入的同一个绝对帧 PE，
-`proj_in` 是线性的、cross-in 的输出是 value 的凸组合，所以 `proj_in(PE_t)` 原样穿到 latent。
-因此不需要 per-block 的正弦/圆周时间表，也没有额外的时间表门控。
-
-完整的 block 顺序（`CrossLimbTemporalBlock.forward`）：
-
-```text
-cross-in
-  → latent temporal self-attention
-  → cross-K self-attention（同一帧的 K 个 latent 互相注意；Pre-Norm + 零初始化 cross_k_scale）
-  → cross-out
-```
-
-cross-K attention 让同一帧的 K 个 latent 在 cross-out 之前直接交换信息，而不必绕
-“cross-out → 下一层 spatial attention → 下一层 cross-in”。`cross_k_scale` 零初始化，
-`cross_k_norm`/`cross_k_attn` 藏在零 gate 之后，训练起点等价于没有 cross-K。
 
 ## 6. Loop 路径
 
@@ -423,7 +389,7 @@ M 大于窗口时插值不可逆，仍用线性插值。
 | 主题 | 文件 |
 |---|---|
 | AnyTop 输入、条件与 forward | `model/motion_diffusion.py` |
-| graph/temporal/cross-limb attention | `model/motion_transformer.py` |
+| graph/temporal attention | `model/motion_transformer.py` |
 | diffusion 构建与 `x_0` 目标 | `utils/model_util.py` |
 | 扩散训练与损失 | `diffusion/gaussian_diffusion.py` |
 | joint structural channel | `data_loaders/truebones/truebones_utils/joint_struct_features.py` |
@@ -434,11 +400,11 @@ M 大于窗口时插值不可逆，仍用线性插值。
 
 ## 11. 宽度分配与设计依据
 
-参数预算由训练配置（`train_diffusion_full.bat`）决定：主干宽度、FFN 宽度、层数、cross-limb 的启用层与瓶颈宽度、
+参数预算由训练配置（`train_diffusion_full.bat`）决定：主干宽度、FFN 宽度、层数、
 `last_layer_ff`。action AdaLN 和 species FiLM 的隐藏宽度均固定为 `latent_dim`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
-参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、cross-limb block、
+参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、
 `action_label_projection`、`input_process`（per-joint species FiLM、joint-name 投影、structural 投影）、
 `tempo_projection`，以及可忽略的 `output_process` 与各层共享的 relation/topology embedding 表。
 
@@ -450,4 +416,3 @@ M 大于窗口时插值不可逆，仍用线性插值。
   `LayerNorm → Linear` 的线性读出，不需要全宽 FFN，因此用 `last_layer_ff` 收窄。
 - **`action_label_projection` 只读紧凑通道**：direction 槽的正交码只占少数几个轴，其余列的输入
   恒为 0，是结构性死参数；投影只读 `compact_slot_channels`，不读完整槽宽。
-- **cross-limb**：proj 的有效秩接近瓶颈宽度，宽度用满。

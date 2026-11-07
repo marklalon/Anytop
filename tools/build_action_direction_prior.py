@@ -41,7 +41,6 @@ def main(argv=None):
         args = Namespace(**json.loads((directory / 'args.json').read_text(encoding='utf-8')))
         if cond_path:
             args.cond_path = cond_path
-        args.action_label_cond = False
         args.action_conditioning = None
         args.species_descriptor_table = None
         args.num_workers = 0

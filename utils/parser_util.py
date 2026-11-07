@@ -31,7 +31,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 60
+CKPT_VERSION = 61
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -354,18 +354,6 @@ def add_model_options(parser):
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
-    group.add_argument("--cross_limb", default=1, type=int, choices=[0, 1],
-                       help="Enable cross-limb temporal blocks (1 = on, 0 = off).")
-    group.add_argument("--cross_limb_latents", default=8, type=int,
-                       help="Number of latent tokens K in the cross-limb temporal block.")
-    group.add_argument("--cross_limb_dim", default=64, type=int,
-                       help="Bottleneck width of each cross-limb temporal block. "
-                            "Clamped to <= latent_dim and a multiple of num_heads.")
-    group.add_argument("--cross_limb_last_n", default=0, type=int,
-                       help="Apply the cross-limb block only on the last N decoder "
-                            "layers (0 = all layers). Each active layer gets its "
-                            "own independent block, so this also controls the "
-                            "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,
@@ -376,21 +364,10 @@ def add_model_options(parser):
                        help="Per-joint probability in training of hiding one joint's rest geometry, "
                             "drawn independently of the name drop. "
                             "Inference never drops.")
-    group.add_argument("--species_cond", action='store_true',
-                       help="FiLM-modulate joint-name embeddings using [joint_name_emb || species_code], "
-                            "species_code = [T5(body plan) || variant one-hot]. Zero-initialized to "
-                            "identity. Applied on every row; it has no CFG drop.")
-    group.add_argument("--action_label_cond", action='store_true',
-                       help="Enable action-label conditioning: the clip's action_label ('run, forward, "
-                            "left, glide' -- controlled keywords, not prose) is split into words, pooled "
-                            "into one frozen-T5 channel per role slot (head / direction / "
-                            "modifier), "
-                            "projected and added to the timestep token. Requires the word table "
-                            "dataset/action_word_embeddings.npy "
-                            "(tools/build_action_label_embeddings.py).")
     group.add_argument("--action_word_embeddings", default="", type=str,
                        help="Override the frozen action-word table path (default: "
-                            "dataset/action_word_embeddings.npy). Its embedding_fingerprint is written "
+                            "dataset/action_word_embeddings.npy, built by "
+                            "tools/build_action_label_embeddings.py). Its embedding_fingerprint is written "
                             "into the checkpoint, so a resume against a different table is refused.")
     group.add_argument("--action_label_cfg_drop_prob", default=0.2, type=float,
                        help="Per-sample probability of hard-dropping the action condition during "
@@ -648,8 +625,7 @@ def add_generate_options(parser):
                             "'attack, slash' covers the armed and the unarmed strike alike; name an "
                             "implement as a modifier ('attack, slash, shield') when the implement "
                             "IS the motion. Empty = "
-                            "unconditional (the learned null embedding). Requires a checkpoint "
-                            "trained with --action_label_cond.")
+                            "unconditional (the learned null embedding).")
     group.add_argument("--auto_direction", default='auto', choices=['auto', 'off'],
                        help="Fill omitted directions using checkpoint-local statistics. Near-top "
                             "direction combinations (within 10 percentage points) are sampled "
@@ -673,7 +649,6 @@ def add_generate_options(parser):
                             "descriptor baked into cond.npy (default from species_tags.jsonl), letting "
                             "you restyle the generated motion (e.g. make a Winged Dragon move as a "
                             "Quadruped, or a human walk like a machine). "
-                            "Requires a checkpoint trained with --species_cond. "
                             "Incompatible with --object_type all. "
                             "Editing a raw .glb/.fbx of a species the checkpoint does not know "
                             "still reads the tags, as that skeleton's own descriptor.")

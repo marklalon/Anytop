@@ -12,6 +12,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -40,7 +41,7 @@ class _CaptureDecoder(torch.nn.Module):
 def _make_model():
     model = MotionDiffusion(
         max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
-        num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM,
+        num_heads=2, dropout=0.0, t5_out_dim=T5_DIM,
     )
     # A trained projection: the zero-init last layer would hide every effect.
     torch.nn.init.normal_(model.tempo_projection[-1].weight, std=0.5)
@@ -53,6 +54,7 @@ def _make_y(frames=3, **extra):
         'rest_geom': torch.linspace(-1.0, 1.0, 2 * 4 * REST_GEOM_DIM).view(2, 4, REST_GEOM_DIM),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
+        'species_code': torch.zeros(2, species_code_dim(T5_DIM)),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([frames, frames], dtype=torch.int64),
         'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
@@ -75,7 +77,7 @@ def _decoder_input(model, y, frames=3, x=None):
 class TempoConditionTest(unittest.TestCase):
     def test_fresh_projection_is_a_no_op(self):
         model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32,
-                       num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+                       num_layers=1, num_heads=2, dropout=0.0,
                        t5_out_dim=T5_DIM).eval()
         emb = model._tempo_frame_embedding(
             _make_y(resample_speed_cond=torch.tensor([0.5, 2.0])), 2, 3, torch.device('cpu'))

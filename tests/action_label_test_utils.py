@@ -1,6 +1,6 @@
 """Shared fixtures for the action-label conditioning tests.
 
-Every test that needs a model with ``--action_label_cond`` needs the frozen word
+Every test that builds a model with a real action-label condition needs the frozen word
 table that goes with it, so the stand-in table is built here once, through the
 real bundle constructor -- a fixture that skipped the validation would let a test
 pass against a table training would reject.

@@ -431,147 +431,6 @@ def circular_phase_embedding(
     return motion_emb if batched else motion_emb[:, 0]
 
 
-class CrossLimbTemporalBlock(nn.Module):
-    """Perceiver-style cross-limb temporal pathway (one independent instance
-    per active decoder layer; post-norm sublayer).
-
-    The base decoder factorizes attention into spatial (per-frame, across
-    joints) and temporal (per-joint, across frames). A joint's temporal
-    trajectory therefore never directly attends to another joint's, so
-    inter-limb frequency/phase coupling is only weak/implicit -- which limits whole-body coordination.
-
-    This block adds the missing path: K learned latent tokens pool ALL joints
-    per frame (cross-in), attend over time with the SAME windowed temporal mask
-    (latent temporal self-attention), exchange information across the K
-    latents of a frame (cross-K self-attention), then write a whole-body
-    rhythm context back to every joint (cross-out). Reuses
-    SelectiveMultiheadAttention; the final residual is post-norm to stay
-    consistent with norm1/2/3 of the layer.
-
-    Cross-K is one Pre-Norm self-attention over the K latents of each frame
-    (attention batch T*B, sequence K), behind a zero-init residual gate
-    ``cross_k_scale``: without it two latents of the same frame only talk via
-    cross-out -> next layer's spatial attention -> next layer's cross-in.
-    The cross-K residual gate is zero-initialized.
-
-    Efficiency: the latent pathway runs at a *narrow* bottleneck width
-    ``latent_width`` (Perceiver latents are meant to be a narrow information
-    bottleneck, not full model width). Joints are projected d_model -> d_cl
-    once (shared by cross-in K/V and cross-out Q), all three attentions run at
-    d_cl, and the whole-body context is projected d_cl -> d_model on the way
-    out. Cross-limb parameter cost scales with the number of active layers
-    (controlled by ``cross_limb_last_n``).
-
-    x flows as (T, B, J, d) where T = nframes.
-    """
-
-    def __init__(self, d_model: int, nhead: int, num_latents: int = 8,
-                 dropout: float = 0.1, latent_width: int = 64):
-        super().__init__()
-        self.d_model = d_model
-        self.num_heads = nhead
-        self.num_latents = num_latents
-        # Bottleneck width: <= d_model and a multiple of nhead (>= nhead).
-        d_cl = max(nhead, (min(latent_width, d_model) // nhead) * nhead)
-        self.latent_dim = d_cl
-        self.latents = nn.Parameter(torch.empty(num_latents, d_cl))
-        nn.init.normal_(self.latents, std=0.02)
-        # Shared joint <-> latent-space projection (read for cross-in K/V and
-        # write-query for cross-out); identity when no bottleneck is needed.
-        self.proj_in = nn.Linear(d_model, d_cl) if d_cl != d_model else nn.Identity()
-        self.proj_out = nn.Linear(d_cl, d_model) if d_cl != d_model else nn.Identity()
-        self.cross_in_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        self.temporal_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        # Cross-K: the same attention dropout as the other three sub-layers.
-        # SelectiveMultiheadAttention defaults to 0.0, so leaving it out would
-        # silently make this one sub-layer un-regularized under --dropout_prob.
-        self.cross_k_norm = nn.LayerNorm(d_cl)
-        self.cross_k_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
-        self.cross_k_scale = nn.Parameter(torch.zeros(1))
-        self.norm_cl = nn.LayerNorm(d_model)
-
-    def forward(
-        self,
-        x: Tensor,
-        joints_key_padding_mask: Tensor,
-        temporal_key_padding_mask: Optional[Tensor] = None,
-    ) -> Tensor:
-        # x: (T, B, J, d_model); joints_key_padding_mask: (B, J) bool,
-        # True == padded joint.
-        T, B, J, _ = x.shape
-        K, d = self.num_latents, self.latent_dim
-
-        # Joints embedded into the narrow latent space once; reused as cross-in
-        # key/value and as cross-out query.
-        xd = self.proj_in(x)                                               # (T, B, J, d_cl)
-
-        # --- Cross-in: latents (query) attend over joints (key/value), per frame.
-        # Flatten so attention batch = T*B with index (t*B + b).
-        kv = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)                   # (J, T*B, d_cl)
-        q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
-        kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
-        temporal_key_bias = None
-        if temporal_key_padding_mask is not None:
-            temporal_key_bias = temporal_key_padding_mask[:, None].expand(B, K, T).reshape(B * K, T)
-        bz, _ = self.cross_in_attn(
-            q,
-            kv,
-            kv,
-            key_padding_mask=kpm,
-            need_weights=False,
-        )
-        bz = bz.reshape(K, T, B, d)
-
-        # --- Latent temporal self-attention across T, unmasked (every latent
-        # token sees the whole window). attention batch = B*K, index (b*K + k).
-        zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
-        # No time table of its own. The latents inherit the frame's absolute PE
-        # through cross-in: every joint token of frame t carries the same PE_t
-        # from InputProcess, proj_in is linear and the attention output is a
-        # convex combination, so proj_in(PE_t) passes through unchanged. A
-        # per-block sinusoidal/circular table behind a zero-init gate was
-        # redundant with that and the gate stayed at |scale| < 0.01 through a
-        # full 400k-step run on every block (docs/anytop_model_architecture.md).
-        zt_resid = zt_in
-        zt, _ = self.temporal_attn(
-            zt_in, zt_in, zt_in,
-            attn_mask=None,
-            key_padding_mask=temporal_key_bias,
-            need_weights=False,
-        )
-        zt = zt_resid + zt
-        zt = zt.reshape(T, B, K, d)
-
-        # --- Cross-K: the K latents of one frame attend over each other.
-        # attention batch = T*B with index (t*B + b) -- the cross-out layout,
-        # so the result feeds cross-out without another permute. Pre-Norm and
-        # a zero-init residual gate: exact no-op until cross_k_scale moves.
-        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
-        # fp32 island. Everything inside cross-K receives a gradient proportional
-        # to the zero-init gate cross_k_scale, so while that gate is still closed
-        # those gradients sit around 1e-11 -- fp16 pushes them into the subnormal
-        # range even at the loss scale a run settles on (2^17), and q_norm /
-        # k_norm's gradient comes out 26% wrong. This is the only zero-init gate
-        # in the model with a whole sub-network behind it. K tokens at the
-        # bottleneck width, so fp32 here measures 0.0% of a step, and it makes
-        # the sub-path independent of the loss scale.
-        # See docs/fp16_vs_bf16_precision.md.
-        with torch.autocast(device_type=kv_out.device.type, enabled=False):
-            kv_out = kv_out.float()
-            zk_norm = self.cross_k_norm(kv_out)
-            zk_delta, _ = self.cross_k_attn(zk_norm, zk_norm, zk_norm, need_weights=False)
-            kv_out = kv_out + self.cross_k_scale * zk_delta
-
-        # --- Cross-out: joints (query) attend over latents (key/value), per frame.
-        # Both flattened to attention batch = T*B with index (t*B + b).
-        q_out = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)               # (J, T*B, d_cl)
-        delta, _ = self.cross_out_attn(q_out, kv_out, kv_out, need_weights=False)
-        delta = delta.reshape(J, T, B, d).permute(1, 2, 0, 3)            # (T, B, J, d_cl)
-
-        return self.norm_cl(x + self.proj_out(delta))
-
-
 class GraphMultiHeadAttention(nn.Module):
     def __init__(self, d_model, dropout, nheads):
         super().__init__()
@@ -1002,9 +861,7 @@ def _modulate(x: Tensor, adaln: Optional[Tensor], branch: int) -> Tensor:
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None,
                  num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_EMBEDDINGS,
-                 value_emb=False,
-                 cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
-                 cross_limb_last_n=0, action_label_adaln=False,
+                 value_emb=False, action_label_adaln=False,
                  last_layer_ff=0,
                  graph_relations=True):
                 # multi head attention
@@ -1053,26 +910,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         if value_emb:
             self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
             self.edge_value_emb = nn.Embedding(num_edge_codes, self.d_model)
-
-        # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
-        # layer gets its own independent block, so this also scales the
-        # cross-limb parameter count.
-        self.cross_limb_last_n = cross_limb_last_n
-        if cross_limb:
-            num_active = (
-                cross_limb_last_n if cross_limb_last_n > 0 else num_layers
-            )
-            self.cross_limb_blocks = nn.ModuleList([
-                CrossLimbTemporalBlock(
-                    self.d_model, decoder_layer.heads,
-                    num_latents=cross_limb_latents,
-                    dropout=decoder_layer.dropout1.p,
-                    latent_width=cross_limb_dim,
-                )
-                for _ in range(num_active)
-            ])
-        else:
-            self.cross_limb_blocks = None
 
         # Action AdaLN: the action condition gets a MULTIPLICATIVE
         # pathway on top of the additive token summed into timesteps_emb
@@ -1148,9 +985,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         # the circular phase added before temporal attention, zeroed for
         # non-loop samples. Its period is T / loop_cycles ([B], the window's
         # cycle count) -- the same table MotionDiffusion put in
-        # `tgt` for loop samples in place of the absolute PE. The cross-limb
-        # blocks take no table: their latents inherit the frame PE through
-        # cross-in (see CrossLimbTemporalBlock).
+        # `tgt` for loop samples in place of the absolute PE.
         loop_phase_embedding = None
         if loop_phase_mask is not None:
             loop_phase_mask = torch.as_tensor(loop_phase_mask, device=tgt.device, dtype=torch.bool).reshape(-1)
@@ -1186,10 +1021,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 cos = torch.where(is_loop, loop_cos, cos)
                 sin = torch.where(is_loop, loop_sin, sin)
             temporal_rope = (cos, sin)
-        first_cl_layer = (
-            self.num_layers - self.cross_limb_last_n
-            if self.cross_limb_last_n > 0 else 0
-        )
         # (B, L, 4, d_model), built once and sliced per layer. The driver is the
         # SAME token the additive path uses -- one Bernoulli draw, one
         # action_repr -- which is what keeps classifier-free guidance honest: a
@@ -1207,14 +1038,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             if self.value_emb_flag:
                 edge_value_emb = self.edge_value_emb
                 topology_value_emb = self.topology_value_emb
-            if self.cross_limb_blocks is not None and layer_ind >= first_cl_layer:
-                cl_block = self.cross_limb_blocks[layer_ind - first_cl_layer]
-            else:
-                cl_block = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y,
-                    cross_limb_block=cl_block,
                     loop_phase_embedding=loop_phase_embedding,
                     adaln=None if adaln is None else adaln[:, layer_ind],
                     temporal_key_padding_mask=temporal_key_padding_mask,
@@ -1239,9 +1065,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
-        # The cross-limb pathway is owned by GraphMotionDecoder (one block per
-        # active layer) and passed into forward(), not held here. The action
-        # AdaLN head is owned there too: one head emits every layer's
+        # The action AdaLN head is owned by GraphMotionDecoder: one head emits every layer's
         # modulation in a single matmul, and each layer is handed its own
         # (B, 4, d_model) slice.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
@@ -1331,7 +1155,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
         y = None,
-        cross_limb_block: Optional[nn.Module] = None,
         loop_phase_embedding: Optional[Tensor] = None,
         adaln: Optional[Tensor] = None,
         temporal_key_padding_mask: Optional[Tensor] = None,
@@ -1356,11 +1179,5 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.norm2(x + self._temporal_mha_block_sin_joint(
             _modulate(x, adaln, ADALN_TEMPORAL), temporal_padding,
             loop_phase_embedding=loop_phase_embedding, temporal_rope=temporal_rope))
-        if cross_limb_block is not None:
-            x = cross_limb_block(
-                x,
-                tgt_key_padding_mask,
-                temporal_key_padding_mask=temporal_key_padding_mask,
-            )
         x = self.norm3(x + self._ff_block(_modulate(x, adaln, ADALN_FF)))
         return x

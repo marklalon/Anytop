@@ -60,7 +60,7 @@ def test_decoder_loop_rows_are_circular_shift_equivariant():
     torch.manual_seed(0)
     frames, batch, joints, width, heads = 12, 2, 3, 16, 2
     layer = GraphMotionDecoderLayer(width, heads, dim_feedforward=32, dropout=0.0)
-    dec = GraphMotionDecoder(layer, num_layers=2, cross_limb=False).eval()
+    dec = GraphMotionDecoder(layer, num_layers=2).eval()
     y = {
         "graph_dist": torch.zeros(batch, joints, joints, dtype=torch.int64),
         "joints_relations": torch.zeros(batch, joints, joints, dtype=torch.int64),

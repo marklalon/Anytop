@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.tensors import truebones_collate  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
@@ -61,7 +62,7 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=None):
+def _make_model(action_label_cfg_drop_prob=0.3, bundle=None):
     return MotionDiffusion(
         max_joints=4,
         feature_len=12,
@@ -70,13 +71,9 @@ def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=N
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=T5_DIM,
-        action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=action_label_cfg_drop_prob,
-        action_conditioning=(
-            (bundle or make_test_bundle()) if action_label_cond else None
-        ),
+        action_conditioning=bundle or make_test_bundle(),
     )
 
 
@@ -86,6 +83,7 @@ def _make_y(**extra):
         'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
+        'species_code': torch.zeros(2, species_code_dim(T5_DIM)),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
@@ -362,24 +360,6 @@ class ActionLabelVocabularyTest(unittest.TestCase):
 
 
 class ActionLabelConditioningTest(unittest.TestCase):
-    def test_disabled_by_default(self):
-        model = MotionDiffusion(
-            max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
-            t5_out_dim=T5_DIM,
-        )
-        self.assertFalse(model.action_label_cond)
-        self.assertIsNone(model.action_label_projection)
-        self.assertIsNone(model.action_label_null_emb)
-        # Forward must run and ignore any provided action condition.
-        capture = _CaptureDecoder()
-        model.seqTransDecoder = capture
-        model.eval()
-        x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
-        model(x, torch.tensor([1, 2], dtype=torch.int64),
-              y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))
-        self.assertIsNotNone(capture.last_kwargs)
-
     def test_invalid_drop_prob_rejected(self):
         with self.assertRaises(ValueError):
             _make_model(action_label_cfg_drop_prob=1.5)

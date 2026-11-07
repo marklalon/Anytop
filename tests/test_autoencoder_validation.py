@@ -18,7 +18,7 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_S
 def validation_args():
     return SimpleNamespace(cond_path='cond.npy', batch_size=16, num_frames=60,
                            sample_filter='training_only.json', seed=10, motion_cache_size=0,
-                           action_label_cond=True, action_conditioning=object(),
+                           action_conditioning=object(),
                            species_descriptor_table=object())
 
 

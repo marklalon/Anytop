@@ -170,14 +170,12 @@ def test_cond_t5_name_reads_the_joint_name_encoder():
 
 def test_species_tags_override_reads_the_table(monkeypatch):
     table = _table([("Biped",), ("Winged",)])
-    model = SimpleNamespace(species_cond=True)
-    monkeypatch.setattr(conditioning, "unwrap_motion_diffusion_model", lambda m: m)
     cond = {"a/Dragon": {"species_emb_meta": {"embedding_text": "Winged"}}}
 
     args = SimpleNamespace(species_tags="biped")
-    code = conditioning._resolve_species_code_override(args, model, cond, "a/Dragon", table)
+    code = conditioning._resolve_species_code_override(args, cond, "a/Dragon", table)
     np.testing.assert_array_equal(code, sdt.species_code(table, ("Biped",), "t"))
 
     args = SimpleNamespace(species_tags="Quadruped")
     with pytest.raises(SystemExit, match="not in the precomputed"):
-        conditioning._resolve_species_code_override(args, model, cond, "a/Dragon", table)
+        conditioning._resolve_species_code_override(args, cond, "a/Dragon", table)

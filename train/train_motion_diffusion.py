@@ -250,9 +250,6 @@ def bootstrap_action_conditioning(args):
     deliberately NOT written to args.json -- the fingerprints travel in the
     checkpoint, and a numpy table has no place in a settings file.
     """
-    if not getattr(args, 'action_label_cond', False):
-        args.action_conditioning = None
-        return None
     bundle = load_action_conditioning(getattr(args, 'action_word_embeddings', None))
     args.action_conditioning = bundle
     print(f"[action-label] word table {bundle.source}")
@@ -262,7 +259,7 @@ def bootstrap_action_conditioning(args):
 
 
 def bootstrap_species_descriptor_table(args, cond_file, save_dir):
-    """The species descriptor table this run trains and ships with, or None.
+    """The species descriptor table this run trains and ships with.
 
     This is where every species descriptor is encoded: the repo-global table is
     built (or extended for a grown vocabulary) against the cond's T5 -- a no-op
@@ -271,9 +268,6 @@ def bootstrap_species_descriptor_table(args, cond_file, save_dir):
     Like the action bundle, it is a runtime object handed to the loaders, never
     written to args.json.
     """
-    if not getattr(args, 'species_cond', False):
-        args.species_descriptor_table = None
-        return None
     shipped = os.path.join(save_dir, SPECIES_DESCRIPTOR_TABLE_FILE)
     if getattr(args, 'resume_checkpoint', '') and os.path.isfile(shipped):
         table = load_species_descriptor_table(shipped)
@@ -298,7 +292,6 @@ def create_training_data_loader(args):
         sample_filter_seed=args.seed,
         sample_limit=args.sample_limit,
         drop_last=True,
-        action_label_cond=getattr(args, 'action_label_cond', False),
         action_conditioning=getattr(args, 'action_conditioning', None),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
         min_length=getattr(args, 'min_length', 20),

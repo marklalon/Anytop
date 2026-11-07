@@ -76,7 +76,7 @@ class MotionAutoencoder(nn.Module):
     """
 
     def __init__(self, t5_out_dim, width=128, layers=2, heads=4, slots=8, latent_dim=32,
-                 ff_size=0, last_layer_ff=0, cross_limb_dim=0, cross_limb_last_n=0,
+                 ff_size=0, last_layer_ff=0,
                  layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
                  dropout_prob=0.0,
                  encoder_layers=None, decoder_layers=None,
@@ -101,7 +101,6 @@ class MotionAutoencoder(nn.Module):
                            encoder_ff_size=encoder_ff_size, decoder_ff_size=decoder_ff_size,
                            heads=heads, slots=slots, latent_dim=latent_dim,
                            ff_size=ff_size, last_layer_ff=last_layer_ff,
-                           cross_limb_dim=cross_limb_dim, cross_limb_last_n=cross_limb_last_n,
                            layerwise_latent=layerwise_latent,
                            decoder_temporal_kernel=decoder_temporal_kernel, variational=variational,
                            dropout_prob=dropout_prob)
@@ -109,8 +108,6 @@ class MotionAutoencoder(nn.Module):
             raise ValueError(f'Invalid dropout_prob: {dropout_prob}')
         if decoder_temporal_kernel < 0 or (decoder_temporal_kernel and decoder_temporal_kernel % 2 == 0):
             raise ValueError('decoder_temporal_kernel must be zero or a positive odd number')
-        if cross_limb_dim < 0 or not 0 <= cross_limb_last_n <= min(encoder_layers, decoder_layers):
-            raise ValueError('Invalid cross-limb configuration')
         if any((dim // heads) % 2 for dim in (encoder_width, decoder_width)):
             raise ValueError('Temporal RoPE requires an even head dimension')
         self.variational = variational
@@ -129,8 +126,7 @@ class MotionAutoencoder(nn.Module):
             return GraphMotionDecoder(
                 GraphMotionDecoderLayer(width, heads, ff_size or width * 4, dropout_prob, 'gelu'),
                 decoder_layers if decoder else encoder_layers,
-                cross_limb=cross_limb_dim > 0, cross_limb_dim=cross_limb_dim or 64,
-                cross_limb_last_n=cross_limb_last_n, graph_relations=True,
+                graph_relations=True,
                 last_layer_ff=last_layer_ff if decoder else 0)
 
         self.encoder = trunk()

@@ -453,7 +453,7 @@ def main(args=None, cond_dict=None, runtime=None):
         # silently dropped (and a label on a checkpoint that cannot use it went
         # unreported). The condition is species-independent: it is word ids into
         # the checkpoint's own vocabulary.
-        _all_action_condition = _resolve_action_condition(args, model)
+        _all_action_condition = _resolve_action_condition(args)
         _species_output_lengths = _all_species_output_lengths(
             cond_dict,
             _all_action_condition,
@@ -592,7 +592,7 @@ def main(args=None, cond_dict=None, runtime=None):
     # first: the auto length only pools loop clips when the window is a loop.
     # With a reference both wait for the clip itself (further down): its length
     # is the window, and --loop auto reads whether it closes off the tensor.
-    _action_condition = _resolve_action_condition(args, model)
+    _action_condition = _resolve_action_condition(args)
     loop_condition = None
     # The loop window's cycle count (None on an open window), see
     # resolve_loop_cycles. With a reference it is 1 (reference_loop_cycles).
@@ -747,7 +747,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
     _species_code_override = _resolve_species_code_override(
-        args, model, cond_dict, object_type, runtime.species_table,
+        args, cond_dict, object_type, runtime.species_table,
     )
 
     _, model_kwargs = create_condition(

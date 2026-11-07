@@ -18,7 +18,7 @@ See the [**original project webpage**](https://anytop2025.github.io/Anytop-page/
 This fork includes significant improvements over the original repository while preserving the core Gaussian Diffusion architecture:
 
 For the authoritative description of the current forward path, conditioning routes, loop behavior,
-cross-limb block, losses, and removed legacy branches, see
+losses, and removed legacy branches, see
 [`docs/anytop_model_architecture.md`](docs/anytop_model_architecture.md). Historical design documents
 under `docs/` may describe superseded intermediate states.
 
@@ -48,7 +48,7 @@ The training presets retain the variational bottleneck and resume from the selec
 ### Evaluation
 - **Motion Quality Scorer** — Reference-calibrated evaluation without autoencoders or discriminators: physical plausibility (bone rigidity, smoothness, continuity) and data-prior conformity (limb symmetry, coordination, tempo) against real clips of the action.
 - **Training Sample Selection** — Training uses all eligible clips in the selected split by default. Optional `--sample_filter` JSON rules combine datasets, object types, species tags, action heads and exact clips. The old training flags `--dataset_namespaces`, `--objects_subset` and `--action_group` are removed. The checkpoint records its effective groups as training metadata; generation ignores these fields and matches label-based length priors across all groups. See [docs/sample_filter.md](docs/sample_filter.md).
-- **Text-to-Motion Conditioning** — `--action_label_cond` looks up frozen T5 embeddings per controlled-vocabulary word, pools them into three separate role slots (head/action, direction, modifier; every head word of the label feeds the head slot, the first one weighted above the rest), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
+- **Text-to-Motion Conditioning** — Always on: the model looks up frozen T5 embeddings per controlled-vocabulary word, pools them into three separate role slots (head/action, direction, modifier; every head word of the label feeds the head slot, the first one weighted above the rest), and projects the concatenated channels into the timestep condition. Use `--action_label "run, forward"` at generation time and `--action_label_cfg_scale` for classifier-free guidance.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
 ### Data Loading

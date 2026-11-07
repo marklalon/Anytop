@@ -53,7 +53,7 @@ class _ProbeHead(torch.nn.Module):
         return self.real(inp)
 
 
-def _make_model(joint_name_drop_prob=0.0, species_cond=False, max_joints=4):
+def _make_model(joint_name_drop_prob=0.0, max_joints=4):
     return MotionDiffusion(
         max_joints=max_joints,
         feature_len=12,
@@ -62,9 +62,7 @@ def _make_model(joint_name_drop_prob=0.0, species_cond=False, max_joints=4):
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=T5_DIM,
-        species_cond=species_cond,
         joint_name_drop_prob=joint_name_drop_prob,
     )
 
@@ -100,6 +98,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
         'rest_geom': torch.randn(batch, max_joints, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor(n_joints, dtype=torch.int64),
         'joints_names_embs': torch.randn(batch, max_joints, T5_DIM, dtype=torch.float32),
+        'species_code': torch.zeros(batch, species_code_dim(T5_DIM)),
         'joint_struct': _joint_struct(batch, max_joints),
         'lengths': torch.tensor([3] * batch, dtype=torch.int64),
         'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),
@@ -112,7 +111,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
 class JointNameDropoutTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-                       num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
+                       num_layers=1, num_heads=2, dropout=0.0)
         self.assertEqual(model.joint_name_drop_prob, 0.0)
 
     def test_invalid_probs_rejected(self):
@@ -141,8 +140,9 @@ class JointNameDropoutTest(unittest.TestCase):
         drop[0, 1] = drop[1, 3] = True
         blanked = joints.masked_fill(drop.unsqueeze(-1), 0.0)
         with torch.no_grad():
-            dropped = ip(x, rest_pose, joints, valid, struct, joint_name_drop=drop)
-            reference = ip(x, rest_pose, blanked, valid, struct)
+            dropped = ip(x, rest_pose, joints, valid, struct, joint_name_drop=drop,
+                         species_code=torch.zeros(x.shape[0], species_code_dim(joints.shape[-1])))
+            reference = ip(x, rest_pose, blanked, valid, struct, species_code=torch.zeros(x.shape[0], species_code_dim(joints.shape[-1])))
         self.assertTrue(torch.equal(dropped, reference))
 
     def test_per_joint_rate_matches_prob(self):
@@ -156,8 +156,8 @@ class JointNameDropoutTest(unittest.TestCase):
     def test_film_sees_the_dropped_names(self):
         """The leak this ordering exists to prevent: if the species FiLM head read
         the pre-drop copy it would hand the model the very name just withheld,
-        and the whole mechanism would be a no-op under --species_cond."""
-        model = _make_model(joint_name_drop_prob=1.0, species_cond=True)
+        and the whole mechanism would be a no-op."""
+        model = _make_model(joint_name_drop_prob=1.0)
         ip = model.input_process
         probe = _ProbeHead(ip.species_film_j)
         ip.species_film_j = probe

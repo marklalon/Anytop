@@ -324,7 +324,6 @@ def test_independent_widths_and_ff_sizes_roundtrip(encoder_width, decoder_width)
         encoder_ff_size=20, decoder_ff_size=40, last_layer_ff=12,
         decoder_layers=2, variational=True,
         layerwise_latent=True, decoder_temporal_kernel=3,
-        cross_limb_dim=8, cross_limb_last_n=1,
     )
     assert model.encoder.layers[0].linear1.out_features == 20
     assert model.decoder.layers[0].linear1.out_features == 40
@@ -466,8 +465,7 @@ def test_complete_channels_latent_and_gradients(joints, frames, kernel):
 @pytest.mark.parametrize('attention', [False, True])
 @pytest.mark.parametrize('kernel', [0, 5])
 def test_joint_and_time_padding_do_not_change_valid_output(loop, attention, kernel):
-    options = dict(cross_limb_dim=8, cross_limb_last_n=1,
-                   layerwise_latent=True, ff_size=32, last_layer_ff=16) if attention else {}
+    options = dict(layerwise_latent=True, ff_size=32, last_layer_ff=16) if attention else {}
     model, x, s = fixture(**options, decoder_temporal_kernel=kernel)
     if kernel:
         # Exercise a learned, non-identity residual, including boundary padding.
@@ -551,8 +549,7 @@ def test_masked_loss_is_per_sample_and_ignores_padding():
 
 
 def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
-    model, x, s = fixture(cross_limb_dim=8, cross_limb_last_n=1,
-                          layerwise_latent=True)
+    model, x, s = fixture(layerwise_latent=True)
     z = model.encode(x, s).detach().requires_grad_()
     pred = model.decode(z, s)
     pred.square().mean().backward()
@@ -563,8 +560,7 @@ def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
 
 
 def test_attention_autoencoder_compiles_as_one_graph():
-    model, x, s = fixture(cross_limb_dim=8, cross_limb_last_n=1,
-                          layerwise_latent=True, decoder_temporal_kernel=5)
+    model, x, s = fixture(layerwise_latent=True, decoder_temporal_kernel=5)
     metadata = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2),
                     resample_speed_cond=torch.tensor([.5, 1.5]))
     compiled = torch.compile(model, backend='eager', fullgraph=True)

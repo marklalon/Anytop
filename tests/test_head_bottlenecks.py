@@ -27,9 +27,8 @@ D, FF, L, T5 = 32, 64, 3, 24
 def _args(**overrides):
     a = SimpleNamespace(
         t5_out_dim=T5, latent_dim=D, ff_size=FF, layers=L, dropout_prob=0.0,
-        value_emb=False, cross_limb_latents=2, cross_limb_dim=8, cross_limb_last_n=1,
-        species_cond=True,
-        joint_name_drop_prob=0.0, action_label_cond=True,
+        value_emb=False,
+        joint_name_drop_prob=0.0,
         action_conditioning=None,
     )
     for k, v in overrides.items():
@@ -83,14 +82,14 @@ def test_full_width_conditioning_heads_and_narrow_last_layer():
 
 def test_last_layer_ff_equal_to_ff_size_keeps_the_clone():
     layer = GraphMotionDecoderLayer(D, 4, dim_feedforward=FF, dropout=0.0, activation='gelu')
-    dec = GraphMotionDecoder(layer, num_layers=L, cross_limb=False, last_layer_ff=FF)
+    dec = GraphMotionDecoder(layer, num_layers=L, last_layer_ff=FF)
     # Same width -> no replacement, so the clone's weights are the prototype's.
     assert torch.equal(dec.layers[-1].linear1.weight, layer.linear1.weight)
 
 
 def test_last_layer_ff_replacement_keeps_dropout_and_activation():
     layer = GraphMotionDecoderLayer(D, 4, dim_feedforward=FF, dropout=0.25, activation='gelu')
-    dec = GraphMotionDecoder(layer, num_layers=L, cross_limb=False, last_layer_ff=16)
+    dec = GraphMotionDecoder(layer, num_layers=L, last_layer_ff=16)
     last = dec.layers[-1]
     assert last.dropout1.p == 0.25 and last.dropout.p == 0.25
     assert last.activation is layer.activation

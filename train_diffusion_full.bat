@@ -29,8 +29,6 @@ pushd "%SCRIPT_DIR%"
 	--ff_size 2048 ^
 	--last_layer_ff 256 ^
 	--layers 8 ^
-	--action_label_cond ^
-	--species_cond ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
 	--topology_aug_prob 0.2 ^
@@ -39,8 +37,6 @@ pushd "%SCRIPT_DIR%"
     --loop_cond_prob_free 0.8 ^
     --loop_cond_prob_anchored 0.2 ^
     --drot_joint_boost 1 ^
-	--cross_limb_dim 256 ^
-	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^
 	--num_frames 90 ^
 	--batch_size 16 ^
