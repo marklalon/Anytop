@@ -5,7 +5,7 @@ REM Usage: train_diffusion_tiny.bat [run_name]
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
-set "RUN_NAME=tiny_diffusion_v1"
+set "RUN_NAME=tiny_diffusion_v3"
 if not "%~1"=="" set "RUN_NAME=%~1"
 
 if not exist "%PYTHON_EXE%" (
@@ -61,7 +61,7 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --ema_rate 0.995 ^
     --num_steps 10000 ^
 	--dropout_prob 0.05 ^
-    --action_label_cfg_drop_prob 0.15 ^
+    --action_label_cfg_drop_prob 0.3 ^
     --joint_name_drop_prob 0.15 ^
     --lambda_loop_wrap 0.04 ^
     --lambda_dpos 0.1 ^

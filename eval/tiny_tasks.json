@@ -1,9 +1,10 @@
 {
   "_comment": "Quick battery for train_diffusion_tiny.bat.",
   "checkpoint": {
-    "RUN_NAME": "zoo_locomotion_tiny_v74",
-    "OUTPUT_DIR": "zoo_locomotion_tiny_v74_tiny"
+    "RUN_NAME": "tiny_diffusion_v3",
+    "OUTPUT_DIR": "tiny_diffusion_v3_tiny"
   },
+  "common_args": ["--sampling_steps", "50"],
   "tasks": [
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "run, forward"]},
     {"category": "Basic_Quadruped", "args": ["--object_type", "truebones/zoo/Buffalo", "--action_label", "jump, up"]},
@@ -19,7 +20,6 @@
     {"category": "Basic_Winged", "args": ["--object_type", "truebones/zoo/Flamingo", "--action_label", "run, forward"]},
     {"category": "Basic_Aquatic", "args": ["--object_type", "truebones/zoo/Jaws", "--action_label", "swim, forward"]},
     {"category": "Basic_Aquatic", "args": ["--object_type", "truebones/zoo/Jaws", "--action_label", "jump, forward"]},
-    {"category": "Basic_Serpentine", "args": ["--object_type", "truebones/zoo/Anaconda", "--action_label", "walk, forward"]},
-    {"category": "Basic_Serpentine", "args": ["--object_type", "truebones/zoo/Anaconda", "--action_label", "jump, up"]}
+    {"category": "Basic_Serpentine", "args": ["--object_type", "truebones/zoo/Anaconda", "--action_label", "walk, forward"]}
   ]
 }

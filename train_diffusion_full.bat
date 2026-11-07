@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=motion_diffusion_alpha_v1
+set RUN_NAME=motion_diffusion_alpha_v2
 set TORCH_LOGS=recompiles,graph_breaks
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
 
@@ -47,7 +47,7 @@ pushd "%SCRIPT_DIR%"
 	--ema_rate 0.9995 ^
 	--num_steps 200000 ^
 	--dropout_prob 0.05 ^
-    --action_label_cfg_drop_prob 0.15 ^
+    --action_label_cfg_drop_prob 0.3 ^
 	--joint_name_drop_prob 0.15 ^
 	--lambda_loop_wrap 0.04 ^
 	--lambda_dpos 0.1 ^
