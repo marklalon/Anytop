@@ -70,7 +70,6 @@ def _make_model():
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=T5_DIM,
         action_label_cond=True,
         action_label_cfg_drop_prob=0.2,

@@ -67,7 +67,6 @@ loop 样本**不再加绝对帧 PE**，改为在输入层加循环相位表，�
 
 - 周期为 `T/k`：相位 `2π·f·k·i/T`，沿用 `circular_phase_embedding` 现有的整数频率 f；k=1 就是周期为 T 的表。
 - 每层叠加的循环相位（`temporal_phase_scale`）使用同一张表。
-  cross-limb 的 latent 通过 cross-in 继承输入层的帧编码，不用另外改。
 - 窗口最后一帧仍是第 0 帧的前一步（`_drop_loop_closing_frame` 的约定不变），所以周期取 `T/k`，不是 `(T−1)/k`。
 
 依据：

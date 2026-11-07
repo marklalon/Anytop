@@ -62,7 +62,6 @@ def _make_model(joint_name_drop_prob=0.0, species_cond=False, max_joints=4):
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=T5_DIM,
         species_cond=species_cond,
         joint_name_drop_prob=joint_name_drop_prob,
@@ -112,7 +111,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
 class JointNameDropoutTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-                       num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
+                       num_layers=1, num_heads=2, dropout=0.0)
         self.assertEqual(model.joint_name_drop_prob, 0.0)
 
     def test_invalid_probs_rejected(self):

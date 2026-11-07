@@ -23,9 +23,7 @@ GRAD_SCALER_INIT_SCALE = 2 ** 13
 # spike. AnyTop's parameter-gradient error is flat from 2^14 to 2^22 and the
 # overflow wall on a typical batch is 2^23, so the top of that window buys
 # nothing: capping here keeps >100x of headroom for outlier batches and the
-# periodic overflow disappears. It is safe to sit this low only because the one
-# loss-scale-sensitive path (cross-K, behind a zero-init gate) is pinned to fp32
-# in CrossLimbTemporalBlock. See docs/fp16_vs_bf16_precision.md.
+# periodic overflow disappears. See docs/fp16_vs_bf16_precision.md.
 GRAD_SCALER_MAX_SCALE = 2 ** 15
 
 

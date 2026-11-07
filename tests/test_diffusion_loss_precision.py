@@ -548,7 +548,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -575,8 +574,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
     def test_anytop_forward_leaves_temporal_attention_unmasked(self):
         # Temporal self-attention is full: no window, so nothing but the spatial
-        # mask reaches the decoder. The cross-limb block used to receive the same
-        # window as a separate template argument -- it must still run without one.
+        # mask reaches the decoder.
         model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
@@ -585,7 +583,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -614,10 +611,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(
             capture_decoder.last_kwargs["spatial_mask"].shape, (2, model.num_heads, 4, 4))
 
-    def test_anytop_runs_the_real_cross_limb_decoder_without_a_temporal_mask(self):
+    def test_anytop_runs_the_real_decoder_without_a_temporal_mask(self):
         # The capture decoder above never enters the attention blocks; this one
-        # runs them, so a cross-limb block that still expected a window template
-        # (or an attention that rejected attn_mask=None) would fail here.
+        # runs them, so an attention that rejected attn_mask=None would fail here.
         model = MotionDiffusion(
             max_joints=4,
             feature_len=12,
@@ -626,7 +622,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=2,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         model.eval()
 

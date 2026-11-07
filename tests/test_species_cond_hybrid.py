@@ -63,7 +63,6 @@ def _make_model(species_cond=False, **extra):
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=T5_DIM,
         species_cond=species_cond,
         **extra,
@@ -107,7 +106,7 @@ def _make_y(species_code=None, **extra):
 class SpeciesHybridTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-                       num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
+                       num_layers=1, num_heads=2, dropout=0.0)
         self.assertFalse(model.species_cond)
         self.assertIsNone(model.input_process.species_film_j)
 

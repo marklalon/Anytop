@@ -40,7 +40,7 @@ class _CaptureDecoder(torch.nn.Module):
 def _make_model():
     model = MotionDiffusion(
         max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
-        num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM,
+        num_heads=2, dropout=0.0, t5_out_dim=T5_DIM,
     )
     # A trained projection: the zero-init last layer would hide every effect.
     torch.nn.init.normal_(model.tempo_projection[-1].weight, std=0.5)
@@ -75,7 +75,7 @@ def _decoder_input(model, y, frames=3, x=None):
 class TempoConditionTest(unittest.TestCase):
     def test_fresh_projection_is_a_no_op(self):
         model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32,
-                       num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+                       num_layers=1, num_heads=2, dropout=0.0,
                        t5_out_dim=T5_DIM).eval()
         emb = model._tempo_frame_embedding(
             _make_y(resample_speed_cond=torch.tensor([0.5, 2.0])), 2, 3, torch.device('cpu'))

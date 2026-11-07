@@ -74,7 +74,6 @@ def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=TEST_T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=drop_prob,
@@ -305,7 +304,7 @@ def test_word_table_from_another_encoder_is_refused():
     with pytest.raises(ValueError, match="t5_out_dim"):
         MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
-            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+            num_layers=1, num_heads=2, dropout=0.0,
             t5_out_dim=TEST_T5_DIM // 2, action_label_cond=True,
             action_conditioning=bundle,
         )
@@ -327,7 +326,7 @@ def test_a_rank_deficient_word_table_is_refused_at_construction():
     with pytest.raises(ValueError, match="full slot-source rank"):
         MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
-            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+            num_layers=1, num_heads=2, dropout=0.0,
             t5_out_dim=384, action_label_cond=True, action_conditioning=bundle,
         )
 

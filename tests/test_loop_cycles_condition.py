@@ -43,7 +43,7 @@ class _CaptureDecoder(torch.nn.Module):
 def _model(**kwargs):
     torch.manual_seed(0)
     model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=LATENT, ff_size=32, num_layers=1,
-                   num_heads=2, dropout=0.0, cross_limb=True, t5_out_dim=T5_DIM, **kwargs)
+                   num_heads=2, dropout=0.0, t5_out_dim=T5_DIM, **kwargs)
     # Trained heads: the zero-init last layers would hide every effect.
     for head in (model.tempo_projection, model.loop_period_projection):
         torch.nn.init.normal_(head[-1].weight, std=0.5)

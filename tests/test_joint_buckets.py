@@ -219,8 +219,7 @@ class PaddingInvarianceTest(unittest.TestCase):
         torch.manual_seed(0)
         model = MotionDiffusion(
             max_joints=100, feature_len=FEATS, latent_dim=16, ff_size=32, num_layers=2,
-            num_heads=2, dropout=0.0, cross_limb=True, cross_limb_latents=3,
-            cross_limb_dim=8, t5_out_dim=T5,
+            num_heads=2, dropout=0.0, t5_out_dim=T5,
         )
         model.eval()
         return model

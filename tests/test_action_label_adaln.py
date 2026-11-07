@@ -59,7 +59,6 @@ def _model(bundle, action_label_cond=True, seed=7):
         num_layers=NUM_LAYERS,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=TEST_T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=0.0,

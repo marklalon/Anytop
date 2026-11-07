@@ -98,7 +98,7 @@ class GenerationIgnoresTrainingGroup(unittest.TestCase):
     def test_generation_accepts_checkpoint_with_retired_slot_dropout(self):
         with tempfile.TemporaryDirectory() as tmp:
             model_path = _checkpoint_dir(
-                tmp, version=60,
+                tmp, version=CKPT_VERSION,
                 direction_slot_drop_prob=0.15, modifier_slot_drop_prob=0.15,
             )
             args = _generate_args(model_path)

@@ -53,8 +53,6 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --loop_cond_prob_free 0.8 ^
     --loop_cond_prob_anchored 0.2 ^
     --drot_joint_boost 1 ^
-    --cross_limb_dim 128 ^
-	--cross_limb_last_n 4 ^
     --diffusion_steps 100 ^
     --num_frames 60 ^
     --batch_size 16 ^

@@ -31,7 +31,7 @@ ACTION_GROUP_ALL = 'all'
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-CKPT_VERSION = 60
+CKPT_VERSION = 61
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise
@@ -354,18 +354,6 @@ def add_model_options(parser):
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
-    group.add_argument("--cross_limb", default=1, type=int, choices=[0, 1],
-                       help="Enable cross-limb temporal blocks (1 = on, 0 = off).")
-    group.add_argument("--cross_limb_latents", default=8, type=int,
-                       help="Number of latent tokens K in the cross-limb temporal block.")
-    group.add_argument("--cross_limb_dim", default=64, type=int,
-                       help="Bottleneck width of each cross-limb temporal block. "
-                            "Clamped to <= latent_dim and a multiple of num_heads.")
-    group.add_argument("--cross_limb_last_n", default=0, type=int,
-                       help="Apply the cross-limb block only on the last N decoder "
-                            "layers (0 = all layers). Each active layer gets its "
-                            "own independent block, so this also controls the "
-                            "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--joint_name_drop_prob", default=0.0, type=float,

@@ -177,7 +177,6 @@ class NativeLoopTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
 
         value = model._coerce_resample_speed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
@@ -419,7 +418,6 @@ class NativeLoopTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -455,7 +453,7 @@ class NativeLoopTests(unittest.TestCase):
 
         D, H, J, T = 8, 2, 3, 6
         layer = GraphMotionDecoderLayer(D, H, dim_feedforward=16, dropout=0.0)
-        dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=True, cross_limb_latents=2, cross_limb_dim=8)
+        dec = GraphMotionDecoder(layer, num_layers=1)
         seen = {}
 
         def stub(output, *a, **kw):
@@ -481,8 +479,6 @@ class NativeLoopTests(unittest.TestCase):
         self.assertEqual(tuple(seen['phase'].shape), (T, 2, D))
         self.assertTrue(torch.equal(seen['phase'][:, 0], circular))
         self.assertTrue(torch.equal(seen['phase'][:, 1], torch.zeros(T, D)))
-        # The cross-limb blocks get no time table of their own any more.
-        self.assertNotIn('cross_limb_time_embedding', seen['kwargs'])
 
 
 if __name__ == '__main__':

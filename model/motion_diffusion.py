@@ -51,10 +51,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.input_feats = len(MODEL_CHANNELS)
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.value_emb=kargs.get('value_emb', False)
-        self.cross_limb=kargs.get('cross_limb', True)
-        self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
-        self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
-        self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
@@ -153,10 +149,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
                                                             activation=self.activation)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb,
-                                                        cross_limb=self.cross_limb,
-                                                        cross_limb_latents=self.cross_limb_latents,
-                                                        cross_limb_dim=self.cross_limb_dim,
-                                                        cross_limb_last_n=self.cross_limb_last_n,
                                                         action_label_adaln=self.action_label_adaln,
                                                         last_layer_ff=self.last_layer_ff)
             

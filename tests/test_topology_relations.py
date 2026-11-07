@@ -386,7 +386,7 @@ class MirrorTwinTest(unittest.TestCase):
 
     def test_decoder_preserves_twins_in_train_and_eval(self):
         from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
-        dec = GraphMotionDecoder(GraphMotionDecoderLayer(8, 2, 16), 1, cross_limb=False)
+        dec = GraphMotionDecoder(GraphMotionDecoderLayer(8, 2, 16), 1)
         edge = torch.as_tensor(self._twin_edge()).unsqueeze(0)
         for training in (True, False):
             dec.train(training)
@@ -451,7 +451,7 @@ class LateralTest(unittest.TestCase):
 
     def test_decoder_preserves_laterality_in_train_and_eval(self):
         from model.motion_transformer import GraphMotionDecoder, GraphMotionDecoderLayer
-        dec = GraphMotionDecoder(GraphMotionDecoderLayer(8, 2, 16), 1, cross_limb=False)
+        dec = GraphMotionDecoder(GraphMotionDecoderLayer(8, 2, 16), 1)
         edge = torch.as_tensor(self._edge()).unsqueeze(0)
         for training in (True, False):
             dec.train(training)

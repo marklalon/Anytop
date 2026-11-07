@@ -90,15 +90,11 @@ def _fixed_validation_rng(device):
 
 # Parameters AdamW must NOT weight-decay, by ``named_parameters()`` name
 # suffix: the zero-init gates a residual or bias path is opened with
-# (cross-limb ``cross_k_scale`` and decoder ``temporal_phase_scale``) plus the
-# cross-K LayerNorm gain/bias. Decay pulls each of them back toward its init,
-# i.e. toward closing the path it was learned to open. A name rule, not
+# (decoder ``temporal_phase_scale``). Decay pulls each of them back toward its
+# init, i.e. toward closing the path it was learned to open. A name rule, not
 # ``param.ndim == 1``: those scalars are ``torch.zeros(1)``, the same rank as
 # the LayerNorm affines that are NOT on this list.
 NO_WEIGHT_DECAY_PARAM_SUFFIXES = (
-    '.cross_k_scale',
-    '.cross_k_norm.weight',
-    '.cross_k_norm.bias',
     '.temporal_phase_scale',
 )
 

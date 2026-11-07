@@ -70,7 +70,6 @@ def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=N
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        cross_limb=True,
         t5_out_dim=T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=action_label_cfg_drop_prob,
@@ -365,7 +364,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
     def test_disabled_by_default(self):
         model = MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-            num_layers=1, num_heads=2, dropout=0.0, cross_limb=True,
+            num_layers=1, num_heads=2, dropout=0.0,
             t5_out_dim=T5_DIM,
         )
         self.assertFalse(model.action_label_cond)

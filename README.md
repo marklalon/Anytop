@@ -18,7 +18,7 @@ See the [**original project webpage**](https://anytop2025.github.io/Anytop-page/
 This fork includes significant improvements over the original repository while preserving the core Gaussian Diffusion architecture:
 
 For the authoritative description of the current forward path, conditioning routes, loop behavior,
-cross-limb block, losses, and removed legacy branches, see
+losses, and removed legacy branches, see
 [`docs/anytop_model_architecture.md`](docs/anytop_model_architecture.md). Historical design documents
 under `docs/` may describe superseded intermediate states.
 
