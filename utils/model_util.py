@@ -230,7 +230,6 @@ def get_gmdm_args(args):
             'cross_limb_latents': args.cross_limb_latents,
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
-            'temporal_rope': bool(getattr(args, 'temporal_rope', False)),
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),

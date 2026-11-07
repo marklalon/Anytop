@@ -27,7 +27,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key, species_lookup_map
 from data_loaders.truebones.truebones_utils.param_utils import FPS
-from utils.model_config import without_removed_skeleton_drops
+from utils.model_config import without_removed_options
 from model.motion_autoencoder import DECODER_CONTENT_VERSION, MotionAutoencoder, to_working_motion
 from sample.conditioning import create_condition
 from sample.export import _bvh_preview_options, _export_motion
@@ -148,7 +148,7 @@ def main(argv=None):
         raise ValueError('Checkpoint canonical feature version does not match this code')
     if checkpoint['decoder_content_version'] != DECODER_CONTENT_VERSION:
         raise ValueError('Checkpoint decoder content version does not match this code')
-    model = MotionAutoencoder(**without_removed_skeleton_drops(checkpoint['model_config']))
+    model = MotionAutoencoder(**without_removed_options(checkpoint['model_config']))
     weights = checkpoint['model_ema'] if checkpoint['args'].get('use_ema', False) else checkpoint['model']
     model.load_state_dict(weights, strict=True)
     model.to(device).eval()

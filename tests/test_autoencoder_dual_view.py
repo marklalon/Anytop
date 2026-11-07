@@ -101,7 +101,7 @@ def test_independent_topology_has_complete_per_view_canonical_context(monkeypatc
 
 
 def view_batch(variational=False):
-    model, x, skeleton = fixture(variational=variational, temporal_rope=True)
+    model, x, skeleton = fixture(variational=variational)
     _, other, other_skeleton = fixture(joints=3)
     def conditions(s):
         return dict(s, lengths=torch.full((2,), 5), is_loop=torch.tensor([False, True]),
@@ -163,14 +163,14 @@ def test_single_decoding_uses_target_name_mask_not_clean_loss_names(monkeypatch)
 
 def test_obsolete_dropout_config_loads_weights_without_restoring_removed_mechanisms():
     from model.motion_autoencoder import MotionAutoencoder
-    from utils.model_config import REMOVED_SKELETON_DROPS, without_removed_skeleton_drops
+    from utils.model_config import REMOVED_MODEL_OPTIONS, without_removed_options
     model, x, skeleton = fixture()
-    old_config = dict(model.config, **{key: .5 for key in REMOVED_SKELETON_DROPS})
-    restored = MotionAutoencoder(**without_removed_skeleton_drops(old_config)).eval()
+    old_config = dict(model.config, **{key: .5 for key in REMOVED_MODEL_OPTIONS})
+    restored = MotionAutoencoder(**without_removed_options(old_config)).eval()
     restored.load_state_dict(model.state_dict(), strict=True)
     torch.testing.assert_close(restored(x, skeleton), model(x, skeleton), rtol=0, atol=0)
-    assert not REMOVED_SKELETON_DROPS.intersection(restored.config)
-    assert REMOVED_SKELETON_DROPS.issubset(old_config)
+    assert not REMOVED_MODEL_OPTIONS.intersection(restored.config)
+    assert REMOVED_MODEL_OPTIONS.issubset(old_config)
 
 
 @pytest.mark.parametrize('option', ['rest_geom_drop_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob'])

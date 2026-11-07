@@ -201,9 +201,8 @@ def test_physical_time_embedding_matches_old_diffusion(frames, is_loop, cycles):
         assert not torch.allclose(actual[:, 0], actual[:, 1])
 
 
-@pytest.mark.parametrize('temporal_rope', [False, True])
-def test_encoder_and_decoder_both_learn_physical_time(temporal_rope):
-    model, x, skeleton = fixture(temporal_rope=temporal_rope)
+def test_encoder_and_decoder_both_learn_physical_time():
+    model, x, skeleton = fixture()
     metadata = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2),
                     resample_speed_cond=torch.tensor([.5, 1.5]))
     # Both open/loop zero-init heads must get gradients through E and through D.
@@ -244,8 +243,8 @@ def fixture(joints=4, frames=5, **options):
 
 
 def test_static_bucket_shapes_compile_once_and_reuse_graphs():
-    model, x8, skeleton8 = fixture(joints=8, temporal_rope=True, layerwise_latent=True)
-    _, x16, skeleton16 = fixture(joints=16, temporal_rope=True, layerwise_latent=True)
+    model, x8, skeleton8 = fixture(joints=8, layerwise_latent=True)
+    _, x16, skeleton16 = fixture(joints=16, layerwise_latent=True)
     graphs = []
 
     def backend(graph, example_inputs):
@@ -263,7 +262,7 @@ def test_static_bucket_shapes_compile_once_and_reuse_graphs():
 def test_asymmetric_depth_reads_latent_initially_and_in_all_decoder_layers():
     model, x, skeleton = fixture(
         encoder_layers=4, decoder_layers=6, layerwise_latent=True,
-        temporal_rope=True, variational=True,
+        variational=True,
     )
     assert len(model.encoder.layers) == 4
     assert len(model.decoder.layers) == 6
@@ -295,8 +294,8 @@ def test_asymmetric_depth_reads_latent_initially_and_in_all_decoder_layers():
     ({'decoder_layers': 0}, 'dimensions'),
     ({'encoder_width': 0}, 'dimensions'),
     ({'decoder_width': 15}, 'dimensions'),
-    ({'decoder_width': 18, 'temporal_rope': True}, 'even head'),
-    ({'encoder_width': 18, 'temporal_rope': True}, 'even head'),
+    ({'decoder_width': 18}, 'even head'),
+    ({'encoder_width': 18}, 'even head'),
     ({'encoder_ff_size': -1}, 'ff_size'),
     ({'decoder_ff_size': -1}, 'ff_size'),
 ])
@@ -308,7 +307,7 @@ def test_asymmetric_configuration_validation(options, match):
 def test_asymmetric_latent_readers_support_fullgraph_training():
     model, x, skeleton = fixture(
         encoder_layers=1, decoder_layers=3, layerwise_latent=True,
-        temporal_rope=True, encoder_width=8, decoder_width=24,
+        encoder_width=8, decoder_width=24,
         encoder_ff_size=20, decoder_ff_size=40,
     )
     compiled = torch.compile(model, backend='eager', fullgraph=True, dynamic=False)
@@ -319,12 +318,11 @@ def test_asymmetric_latent_readers_support_fullgraph_training():
 
 
 @pytest.mark.parametrize('encoder_width,decoder_width', [(8, 24), (24, 8)])
-@pytest.mark.parametrize('rope', [False, True])
-def test_independent_widths_and_ff_sizes_roundtrip(encoder_width, decoder_width, rope):
+def test_independent_widths_and_ff_sizes_roundtrip(encoder_width, decoder_width):
     model, x, skeleton = fixture(
         encoder_width=encoder_width, decoder_width=decoder_width,
         encoder_ff_size=20, decoder_ff_size=40, last_layer_ff=12,
-        decoder_layers=2, temporal_rope=rope, variational=True,
+        decoder_layers=2, variational=True,
         layerwise_latent=True, decoder_temporal_kernel=3,
         cross_limb_dim=8, cross_limb_last_n=1,
     )
@@ -378,7 +376,7 @@ def test_independent_dimension_cli():
 def test_frame_aligned_latent_shapes_sampling_gradients_and_checkpoint(frames, variational):
     from model.motion_autoencoder import diagonal_gaussian_kl
     model, x, s = fixture(frames=frames, variational=variational,
-                          temporal_rope=True, layerwise_latent=True)
+                          layerwise_latent=True)
     frame = torch.ones(2, frames, dtype=torch.bool)
     loop = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
     model.train()
@@ -399,7 +397,7 @@ def test_frame_aligned_latent_shapes_sampling_gradients_and_checkpoint(frames, v
 
 def test_frame_aligned_padding_and_mixed_valid_lengths_match_individual_clips():
     model, x, s = fixture(frames=7, variational=True,
-                          temporal_rope=True, layerwise_latent=True)
+                          layerwise_latent=True)
     frame = torch.tensor([[True] * 5 + [False] * 2, [True] * 7])
     loop = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2))
     loop['resample_speed_cond'] = torch.tensor([.5, 1.5])
@@ -468,7 +466,7 @@ def test_complete_channels_latent_and_gradients(joints, frames, kernel):
 @pytest.mark.parametrize('attention', [False, True])
 @pytest.mark.parametrize('kernel', [0, 5])
 def test_joint_and_time_padding_do_not_change_valid_output(loop, attention, kernel):
-    options = dict(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
+    options = dict(cross_limb_dim=8, cross_limb_last_n=1,
                    layerwise_latent=True, ff_size=32, last_layer_ff=16) if attention else {}
     model, x, s = fixture(**options, decoder_temporal_kernel=kernel)
     if kernel:
@@ -503,10 +501,8 @@ def test_decoder_ignores_dynamic_condition_fields_and_reads_latent():
     assert not torch.allclose(model.decode(z.roll(1, 0), s), expected)
 
 
-@pytest.mark.parametrize('rope', [False, True])
-def test_decoder_zero_init_tempo_preserves_constant_latent_and_ignores_phase(monkeypatch, rope):
-    model, x, skeleton = fixture(temporal_rope=rope,
-                                 layerwise_latent=True)
+def test_decoder_zero_init_tempo_preserves_constant_latent_and_ignores_phase(monkeypatch):
+    model, x, skeleton = fixture(layerwise_latent=True)
     frame = torch.ones(2, x.shape[-1], dtype=torch.bool)
     loop = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
     # Exercise a nonzero phase scale: the zero initialization would hide a leak.
@@ -536,7 +532,7 @@ def test_decoder_time_option_is_removed():
     from train.train_autoencoder import parser
     args = parser().parse_args(['--save_dir', 'unused'])
     assert not hasattr(args, 'decoder_time_injection')
-    model, x, skeleton = fixture(temporal_rope=True, layerwise_latent=True)
+    model, x, skeleton = fixture(layerwise_latent=True)
     assert 'decoder_time_injection' not in model.config
     for option in ('--decoder_time_injection', '--no-decoder_time_injection'):
         with pytest.raises(SystemExit):
@@ -555,7 +551,7 @@ def test_masked_loss_is_per_sample_and_ignores_padding():
 
 
 def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
-    model, x, s = fixture(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
+    model, x, s = fixture(cross_limb_dim=8, cross_limb_last_n=1,
                           layerwise_latent=True)
     z = model.encode(x, s).detach().requires_grad_()
     pred = model.decode(z, s)
@@ -567,7 +563,7 @@ def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
 
 
 def test_attention_autoencoder_compiles_as_one_graph():
-    model, x, s = fixture(temporal_rope=True, cross_limb_dim=8, cross_limb_last_n=1,
+    model, x, s = fixture(cross_limb_dim=8, cross_limb_last_n=1,
                           layerwise_latent=True, decoder_temporal_kernel=5)
     metadata = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2),
                     resample_speed_cond=torch.tensor([.5, 1.5]))
@@ -604,7 +600,7 @@ def test_amp_unscales_before_clipping_and_preserves_weights_on_overflow():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA AMP required')
 def test_autoencoder_fp16_forward_backward_keeps_fp32_parameters():
-    model, x, s = fixture(temporal_rope=True, layerwise_latent=True, decoder_temporal_kernel=5)
+    model, x, s = fixture(layerwise_latent=True, decoder_temporal_kernel=5)
     model = model.cuda().train()
     x, s = x.cuda(), {k: v.cuda() for k, v in s.items()}
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -787,7 +783,7 @@ def test_geometry_drop_preserves_clean_context_and_replays(joint_prob):
 
 def test_regularized_autoencoder_compiles_trains_and_has_deterministic_eval():
     options = dict(dropout_prob=.1,
-                   temporal_rope=True, layerwise_latent=True)
+                   layerwise_latent=True)
     model, x, skeleton = fixture(**options)
     for trunk in (model.encoder, model.decoder):
         assert trunk.layers[0].dropout1.p == .1

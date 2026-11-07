@@ -41,7 +41,6 @@ pushd "%SCRIPT_DIR%"
     --drot_joint_boost 1 ^
 	--cross_limb_dim 256 ^
 	--cross_limb_last_n 4 ^
-    --temporal_rope ^
 	--diffusion_steps 100 ^
 	--num_frames 90 ^
 	--batch_size 16 ^

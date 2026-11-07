@@ -77,7 +77,7 @@ class MotionAutoencoder(nn.Module):
 
     def __init__(self, t5_out_dim, width=128, layers=2, heads=4, slots=8, latent_dim=32,
                  ff_size=0, last_layer_ff=0, cross_limb_dim=0, cross_limb_last_n=0,
-                 temporal_rope=False, layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
+                 layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
                  dropout_prob=0.0,
                  encoder_layers=None, decoder_layers=None,
                  encoder_width=None, decoder_width=None,
@@ -102,7 +102,7 @@ class MotionAutoencoder(nn.Module):
                            heads=heads, slots=slots, latent_dim=latent_dim,
                            ff_size=ff_size, last_layer_ff=last_layer_ff,
                            cross_limb_dim=cross_limb_dim, cross_limb_last_n=cross_limb_last_n,
-                           temporal_rope=temporal_rope, layerwise_latent=layerwise_latent,
+                           layerwise_latent=layerwise_latent,
                            decoder_temporal_kernel=decoder_temporal_kernel, variational=variational,
                            dropout_prob=dropout_prob)
         if not 0 <= dropout_prob <= 1:
@@ -111,10 +111,10 @@ class MotionAutoencoder(nn.Module):
             raise ValueError('decoder_temporal_kernel must be zero or a positive odd number')
         if cross_limb_dim < 0 or not 0 <= cross_limb_last_n <= min(encoder_layers, decoder_layers):
             raise ValueError('Invalid cross-limb configuration')
-        if temporal_rope and any((dim // heads) % 2 for dim in (encoder_width, decoder_width)):
+        if any((dim // heads) % 2 for dim in (encoder_width, decoder_width)):
             raise ValueError('Temporal RoPE requires an even head dimension')
         self.variational = variational
-        self.temporal_rope, self.layerwise_latent = temporal_rope, layerwise_latent
+        self.layerwise_latent = layerwise_latent
         self.width, self.slots, self.latent_dim = encoder_width, slots, latent_dim
         self.encoder_width, self.decoder_width = encoder_width, decoder_width
         width = encoder_width
@@ -131,7 +131,7 @@ class MotionAutoencoder(nn.Module):
                 decoder_layers if decoder else encoder_layers,
                 cross_limb=cross_limb_dim > 0, cross_limb_dim=cross_limb_dim or 64,
                 cross_limb_last_n=cross_limb_last_n, graph_relations=True,
-                last_layer_ff=last_layer_ff if decoder else 0, temporal_rope=temporal_rope)
+                last_layer_ff=last_layer_ff if decoder else 0)
 
         self.encoder = trunk()
         self.decoder = trunk(decoder=True)
@@ -251,11 +251,11 @@ class MotionAutoencoder(nn.Module):
         graph = {k: skeleton[k] for k in ('graph_dist', 'joints_relations')}
         metadata = loop_metadata or {}
         tokens = tokens + self._tempo_embedding(frame, metadata, decoder=module is self.decoder).to(tokens.dtype)
-        rope = self._rope(frame, metadata, tokens.shape[-1]) if self.temporal_rope else None
+        rope = self._rope(frame, metadata, tokens.shape[-1])
         phase = None
         # Only the encoder receives phase as content. Decoder uses RoPE and
         # physical tempo above, without an extra absolute/circular phase table.
-        if self.temporal_rope and module is self.encoder:
+        if module is self.encoder:
             is_loop = metadata.get('is_loop', torch.zeros(frame.shape[0], device=frame.device, dtype=torch.bool))
             phase = self._position(frame, metadata).squeeze(2) * is_loop[None, :, None]
         return module(tokens, tokens.new_zeros(tokens.shape[1], tokens.shape[-1]), None,

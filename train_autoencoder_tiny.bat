@@ -47,7 +47,6 @@ if not exist "dataset\cond_all.npy" (
     --decoder_ff_size 1024 ^
     --cross_limb_dim 0 ^
     --cross_limb_last_n 0 ^
-    --temporal_rope ^
     --compile reduce-overhead ^
     --amp_dtype fp16 ^
     --heads 4 ^

@@ -81,7 +81,7 @@ class _AttentionOutProjection(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
 
-# Temporal RoPE frequency range (--temporal_rope), in radians per window frame.
+# Temporal RoPE frequency range, in radians per window frame.
 # The fastest pair turns half a cycle per frame (Nyquist, a two-frame period);
 # the slowest has a period far beyond the window, so the low pairs read as a
 # smooth distance kernel. The pairs in between are spaced geometrically.
@@ -1006,8 +1006,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0, action_label_adaln=False,
                  last_layer_ff=0,
-                 graph_relations=True,
-                 temporal_rope=False):
+                 graph_relations=True):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
         # graph_relations=False: spatial attention without the topology / edge
@@ -1107,10 +1106,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             nn.init.zeros_(self.action_adaln[-1].bias)
         else:
             self.action_adaln = None
-        # --temporal_rope: every layer's temporal attention (the replaced last
-        # layer included) rotates q / k by frame index; parameter-free, so it
-        # does not change the state_dict.
-        self.temporal_rope = bool(temporal_rope)
+        # Every layer's temporal attention (the replaced last layer included)
+        # rotates q / k by frame index; parameter-free.
 
     def _resolve_edge_codes(self, edge_rel: Tensor) -> Tensor:
         """Resolve stored relation codes without hiding symmetry or laterality."""
@@ -1135,14 +1132,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             loop_cycles: Optional[Tensor] = None,
             action_adaln_cond: Optional[Tensor] = None,
             temporal_key_padding_mask: Optional[Tensor] = None,
-            temporal_rope_off: Optional[Tensor] = None,
             motion_z: Optional[Tensor] = None,
             temporal_rope_override: Optional[Tuple[Tensor, Tensor]] = None,
             loop_phase_override: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         # temporal_key_padding_mask: (B, T) bool, True = no frame may attend to
         # this frame in temporal attention (the frame still queries).
-        # temporal_rope_off: (B,) bool, True = that row's temporal attention
-        # uses the identity RoPE table when explicitly selected by the caller.
         topology_rel = edge_rel = None
         if self.graph_relations:
             topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
@@ -1182,7 +1176,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         if loop_phase_override is not None:
             loop_phase_embedding = loop_phase_override
         temporal_rope = temporal_rope_override
-        if self.temporal_rope and temporal_rope is None:
+        if temporal_rope is None:
             head_dim = self.layers[0].temporal_attn.head_dim
             cos, sin = temporal_rope_tables(T, head_dim, tgt.device)
             cos, sin = cos.expand(B, -1, -1), sin.expand(B, -1, -1)
@@ -1191,10 +1185,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 is_loop = loop_phase_mask.view(B, 1, 1)
                 cos = torch.where(is_loop, loop_cos, cos)
                 sin = torch.where(is_loop, loop_sin, sin)
-            if temporal_rope_off is not None:
-                off = temporal_rope_off.to(device=tgt.device, dtype=torch.bool).view(B, 1, 1)
-                cos = torch.where(off, torch.ones_like(cos), cos)
-                sin = torch.where(off, torch.zeros_like(sin), sin)
             temporal_rope = (cos, sin)
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n

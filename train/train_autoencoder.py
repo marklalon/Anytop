@@ -382,7 +382,6 @@ def parser():
     p.add_argument('--last_layer_ff', type=int, default=0)
     p.add_argument('--cross_limb_dim', type=int, default=0)
     p.add_argument('--cross_limb_last_n', type=int, default=0)
-    p.add_argument('--temporal_rope', action='store_true')
     p.add_argument('--decoder_temporal_kernel', type=int, default=0,
                    help='Optional decoder output temporal residual convolution; zero disables')
     p.add_argument('--compile', choices=('None', 'default', 'reduce-overhead'), default='None')
@@ -493,7 +492,7 @@ def main():
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
         for key in ('last_layer_ff', 'cross_limb_dim', 'cross_limb_last_n',
-                    'temporal_rope', 'decoder_temporal_kernel'):
+                    'decoder_temporal_kernel'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
         for key in AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS:
@@ -520,7 +519,7 @@ def main():
                               encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,
                               latent_dim=args.latent_dim, ff_size=args.ff_size,
                               last_layer_ff=args.last_layer_ff, cross_limb_dim=args.cross_limb_dim,
-                              cross_limb_last_n=args.cross_limb_last_n, temporal_rope=args.temporal_rope,
+                              cross_limb_last_n=args.cross_limb_last_n,
                               layerwise_latent=True,
                               decoder_temporal_kernel=args.decoder_temporal_kernel,
                               variational=args.variational,

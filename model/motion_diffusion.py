@@ -55,7 +55,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
-        self.temporal_rope=bool(kargs.get('temporal_rope', False))
         self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
         # --species_cond: the species code (body plan + variant) FiLM-modulates
         # each joint-name embedding in InputProcess; that is its only entry point.
@@ -159,8 +158,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
                                                         cross_limb_dim=self.cross_limb_dim,
                                                         cross_limb_last_n=self.cross_limb_last_n,
                                                         action_label_adaln=self.action_label_adaln,
-                                                        last_layer_ff=self.last_layer_ff,
-                                                        temporal_rope=self.temporal_rope)
+                                                        last_layer_ff=self.last_layer_ff)
             
         
         self.output_process = OutputProcess(
@@ -232,7 +230,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         # The decoder re-adds the same circular table (period T / k) per layer
         # on loop rows.
         output = self.seqTransDecoder(
-            temporal_rope_off=y.get('temporal_rope_off'),
             tgt=x,
             timesteps_embs=timesteps_emb,
             memory=None,
