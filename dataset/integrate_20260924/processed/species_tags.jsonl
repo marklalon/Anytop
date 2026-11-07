@@ -56,7 +56,7 @@
 {"species": "ORA_ArmoredCatfish", "species_tags": ["Aquatic"]}
 {"species": "ORA_ArtDoll", "species_tags": ["Biped"]}
 {"species": "ORA_BabySheegoth", "species_tags": ["Biped"]}
-{"species": "ORA_Ballora", "species_tags": ["Biped"]}
+{"species": "ORA_Ballora", "species_tags": ["Multiped"]}
 {"species": "ORA_Bat", "species_tags": ["Biped"]}
 {"species": "ORA_BatToon", "species_tags": ["Winged"]}
 {"species": "ORA_Bee", "species_tags": ["Winged", "Fluttering"]}
