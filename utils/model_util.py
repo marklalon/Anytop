@@ -200,7 +200,8 @@ def bind_checkpoint_action_conditioning(model, metadata, source: str):
     action_conditioning = (metadata or {}).get('action_conditioning')
     if action_conditioning is None:
         raise ActionConditioningError(
-            f"{source} was saved by a model with no action conditioning."
+            f"{source} carries no action_conditioning metadata, so its action word "
+            "table cannot be certified; the checkpoint is incomplete."
         )
     return unwrapped.validate_loaded_action_conditioning(action_conditioning, source)
 
