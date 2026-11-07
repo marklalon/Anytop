@@ -59,7 +59,10 @@ The checkpoint and task battery are loaded from a JSON config (``--task_config``
 default ``eval/eval_tasks.json``) so they can be tuned without
 editing code. The config must define ``checkpoint.RUN_NAME`` and may define
 ``checkpoint.MODEL_FILE`` and ``checkpoint.OUTPUT_DIR`` (the run folder, see
-above). Each task is
+above). An optional top-level ``common_args`` list of generate.py flags is
+prepended to every task's args, so ``"common_args": ["--sampling_steps", "50"]``
+sets the sampler for the whole battery; a task can still override it in its own
+args. Each task is
 ``{"category": str, "args": [<generate.py flags>], "eval_label": str?}``;
 path-valued flags accept absolute paths or paths relative to the Anytop dir.
 
@@ -171,7 +174,9 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
 
     The config is an object with a ``checkpoint`` object and a ``tasks`` list.
     ``checkpoint.RUN_NAME`` is required and ``checkpoint.MODEL_FILE`` and
-    ``checkpoint.OUTPUT_DIR`` are optional. Each task is
+    ``checkpoint.OUTPUT_DIR`` are optional. An optional top-level
+    ``common_args`` list is prepended to every task's ``args`` (e.g.
+    ``["--sampling_steps", "50"]``). Each task is
     ``{"category": str, "args": [str, ...]}`` plus an optional
     ``"eval_label"``; every task resolves to a scoring label
     (see :func:`_task_score_label`) or the whole config is rejected here,
@@ -208,6 +213,13 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
             f"Task config {config_path}: checkpoint.OUTPUT_DIR must be a non-empty string when set"
         )
 
+    common_args = data.get("common_args", [])
+    if not isinstance(common_args, list):
+        raise ValueError(
+            f"Task config {config_path}: common_args must be a list of generate.py flags"
+        )
+    common_args = [str(a) for a in common_args]
+
     raw_tasks = data.get("tasks", [])
     if not isinstance(raw_tasks, list):
         raise ValueError(
@@ -218,7 +230,8 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
     for i, entry in enumerate(raw_tasks):
         try:
             category = entry["category"]
-            args = [str(a) for a in entry["args"]]
+            # Battery-wide flags first: a task's own flag wins (argparse last-wins).
+            args = [*common_args, *(str(a) for a in entry["args"])]
         except (KeyError, TypeError) as exc:
             raise ValueError(
                 f"Task #{i} in {config_path} must have 'category' and an 'args' list ({exc})"

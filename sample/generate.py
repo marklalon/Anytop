@@ -306,6 +306,7 @@ def main(args=None, cond_dict=None, runtime=None):
         runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
     else:
         runtime.validate_args(args)
+        runtime.match_sampling(args)
         # If the task resolves to a different cond than the runtime holds (its
         # own --cond_path, or the checkpoint's cond when it names none), reload
         # that cond and re-derive opt for it (species entries, dataset_tags/

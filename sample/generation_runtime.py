@@ -23,6 +23,7 @@ from data_loaders.truebones.truebones_utils.species_descriptor_table import (
 from utils import dist_util
 from utils.model_util import (
     bind_checkpoint_action_conditioning,
+    create_gaussian_diffusion,
     create_model_and_diffusion_general_skeleton,
     load_checkpoint_weights,
     load_model,
@@ -58,16 +59,18 @@ class GenerationRuntime:
             )
         if int(getattr(args, 'device', 0)) != int(self.device):
             raise ValueError("GenerationRuntime cannot be reused across different --device values")
-        sampling_steps = int(getattr(args, 'sampling_steps', 100))
-        sampling_method = str(getattr(args, 'sampling_method', 'ddpm')).lower()
-        if sampling_method != self.sampling_method or sampling_steps != self.sampling_steps:
-            raise ValueError(
-                "GenerationRuntime cannot be reused when --sampling_method or "
-                "--sampling_steps changes"
-            )
         amp_dtype = str(getattr(args, 'amp_dtype', 'fp32')).lower()
         if amp_dtype != self.amp_dtype:
             raise ValueError("GenerationRuntime cannot be reused across different --amp_dtype values")
+
+    def match_sampling(self, args):
+        """Rebuild the respaced diffusion when a task asks for another
+        --sampling_method / --sampling_steps; the model weights stay shared."""
+        sampling_method, sampling_steps = _configure_sampling_args(args)
+        if sampling_method != self.sampling_method or sampling_steps != self.sampling_steps:
+            self.diffusion = create_gaussian_diffusion(args)
+            self.sampling_method = sampling_method
+            self.sampling_steps = sampling_steps
 
 
 def _checkpoint_cond_path(model_path):
