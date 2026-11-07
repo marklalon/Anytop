@@ -56,7 +56,7 @@ available port and the report opens in the browser. Pass ``--no_review`` to
 generate the report without starting the server or opening a browser.
 
 The checkpoint and task battery are loaded from a JSON config (``--task_config``,
-default ``eval/eval_tasks.json``) so they can be tuned without
+default ``eval/eval_tasks_diffusion.json``) so they can be tuned without
 editing code. The config must define ``checkpoint.RUN_NAME`` and may define
 ``checkpoint.MODEL_FILE`` and ``checkpoint.OUTPUT_DIR`` (the run folder, see
 above). An optional top-level ``common_args`` list of generate.py flags is
@@ -66,12 +66,19 @@ args. Each task is
 ``{"category": str, "args": [<generate.py flags>], "eval_label": str?}``;
 path-valued flags accept absolute paths or paths relative to the Anytop dir.
 
-The shipped battery is ``eval/eval_tasks.json`` (one file covering every
+The shipped battery is ``eval/eval_tasks_diffusion.json`` (one file covering every
 species and category, naming its own ``checkpoint.RUN_NAME``).
+
+AE batteries (``eval/eval_tasks_ae.json``) use ``--npy`` task arguments and
+``sample.generate_ae`` for reconstruction or skeleton transfer. They
+default to ``save/<RUN_NAME>/autoencoder.pt`` and share model weights across
+tasks. Original clips appear as report references; only reconstructions are
+scored. AE and diffusion tasks must use separate configs.
 
 Usage::
 
-    python eval/eval_checkpoint.py --task_config eval/eval_tasks.json
+    python eval/eval_checkpoint.py --task_config eval/eval_tasks_diffusion.json
+    python eval/eval_checkpoint.py --task_config eval/eval_tasks_ae.json
     python eval/eval_checkpoint.py --task_config my_tasks.json --output_root <dir>
     python eval/eval_checkpoint.py --task_config my_tasks.json --overwrite
     python eval/eval_checkpoint.py --model_path .../model.pt --task_config my_tasks.json
@@ -115,14 +122,14 @@ _LAST_OUTPUT = "$LAST_OUTPUT"
 
 # Default task battery, loaded when --task_config is omitted. The batch entry
 # point requires this path explicitly; the Python default is kept for direct
-# invocations. The shipped battery is eval/eval_tasks.json.
-_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
+# invocations. The shipped battery is eval/eval_tasks_diffusion.json.
+_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks_diffusion.json"
 # The datasets the quality reference is pooled over: every processed
 # dataset the training cond was merged from, not just the first one.
 _DEFAULT_DATASET_ROOT = _ANYTOP_DIR / "dataset" / "datasets_all.jsonl"
 # generate.py flags whose following value is a filesystem path. Their values are
 # resolved (relative → Anytop dir) when a task is loaded from the config.
-_PATH_FLAGS = ("--reference_motion", "--cond_path")
+_PATH_FLAGS = ("--reference_motion", "--cond_path", "--npy")
 _CONTENT_HASH_FLAGS = _PATH_FLAGS
 
 # generate.py flags every task shares (model_path / output_dir are added per
@@ -131,6 +138,10 @@ _CONTENT_HASH_FLAGS = _PATH_FLAGS
 # harness reports (docs/bf16_precision_issues.md). Folded into the task checksum,
 # so output generated under different common flags is regenerated, not reused.
 _COMMON_GENERATE_ARGS = ("--batch_size", "4", "--amp_dtype", "fp32")
+
+
+def _common_task_args(extra_args):
+    return ("--amp_dtype", "fp32") if "--npy" in extra_args else _COMMON_GENERATE_ARGS
 
 
 # ── Task battery ────────────────────────────────────────────────────────────
@@ -142,7 +153,7 @@ _COMMON_GENERATE_ARGS = ("--batch_size", "4", "--amp_dtype", "fp32")
 #
 # Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
 # path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
-# unchanged. See eval/eval_tasks.json for the default battery.
+# unchanged. See eval/eval_tasks_diffusion.json for the default battery.
 class _ResolvedPath(str):
     """Resolved path string that remembers the text written in the task config."""
 
@@ -244,19 +255,25 @@ def _load_task_config(config_path: Path) -> tuple[dict, list]:
         except ValueError as exc:
             raise ValueError(f"Task #{i} ({category}) in {config_path}: {exc}")
         # Resolve the value following each path-valued flag, in place.
-        for j in range(len(args) - 1):
-            if args[j] in _PATH_FLAGS:
-                resolved = _resolve_arg_path(args[j + 1], _ANYTOP_DIR)
+        path_flag = None
+        for j, value in enumerate(args):
+            if value.startswith("--"):
+                path_flag = value if value in _PATH_FLAGS else None
+                continue
+            if path_flag:
+                resolved = _resolve_arg_path(value, _ANYTOP_DIR)
                 # Fast-fail on missing paths (sentinel passes through).
                 if resolved != _LAST_OUTPUT and not Path(resolved).is_file():
                     raise ValueError(
-                        f"Task #{i} in {config_path}: {args[j]} points to "
+                        f"Task #{i} in {config_path}: {path_flag} points to "
                         f"non-existent file: {resolved}"
                     )
                 if resolved != _LAST_OUTPUT:
                     resolved = _ResolvedPath(resolved)
-                    resolved.raw = args[j + 1]
-                args[j + 1] = resolved
+                    resolved.raw = value
+                args[j] = resolved
+                if path_flag != "--npy":
+                    path_flag = None
         tasks.append((category, args, score_label))
 
     if not tasks:
@@ -307,7 +324,7 @@ def _resolve_checkpoint(checkpoint: dict) -> Path:
             model_path = checkpoint_dir / model_path
         return model_path.resolve()
 
-    patterns = ("model*.pt",)
+    patterns = ("autoencoder.pt",) if checkpoint.get("TYPE") == "autoencoder" else ("model*.pt",)
     candidates = sorted(
         [path for pattern in patterns for path in checkpoint_dir.glob(pattern)],
         key=lambda path: path.stat().st_mtime,
@@ -355,14 +372,20 @@ def _task_param_hash(extra_args: list[str]) -> str:
     is resolved per-run from the previous task's output, not a fixed file).
 
     """
-    common_args = _COMMON_GENERATE_ARGS
+    common_args = _common_task_args(extra_args)
     hashed_args = [*common_args, *extra_args]
     parts: list[str] = []
+    path_flag = None
     for i, arg in enumerate(hashed_args):
         parts.append(arg)
-        if i > 0 and hashed_args[i - 1] in _CONTENT_HASH_FLAGS and arg != _LAST_OUTPUT:
+        if arg.startswith("--"):
+            path_flag = arg if arg in _CONTENT_HASH_FLAGS else None
+            continue
+        if path_flag and arg != _LAST_OUTPUT:
             p = Path(arg)
             parts.append(f"sha256:{_file_content_hash(p)}" if p.is_file() else "missing")
+        if path_flag != "--npy":
+            path_flag = None
     payload = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -387,7 +410,7 @@ def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str) -> None
         json.dumps(
             {
                 "hash": digest,
-                "common_args": list(_COMMON_GENERATE_ARGS),
+                "common_args": list(_common_task_args(extra_args)),
                 "args": extra_args,
             },
             indent=2, ensure_ascii=False,
@@ -448,7 +471,7 @@ def _bvh_href(npy_path: Path) -> str:
 def _extract_reference_motion(extra_args: list) -> str | None:
     """Extract the path value after --reference_motion in extra_args."""
     try:
-        idx = extra_args.index("--reference_motion")
+        idx = extra_args.index("--npy" if "--npy" in extra_args else "--reference_motion")
         if idx + 1 < len(extra_args):
             return extra_args[idx + 1]
     except ValueError:
@@ -676,6 +699,11 @@ def _build_record_from_existing(
         adopted = task_dir / "_reference_cond" / "cond.npy"
         if adopted.is_file():
             task_cond = _register_cond_path(scorer, str(adopted))
+    ae_metrics = task_dir / "reconstruction_metrics.json"
+    if ae_metrics.is_file():
+        metrics = json.loads(ae_metrics.read_text(encoding="utf-8"))
+        task_cond = _register_cond_path(scorer, metrics["cond_path"])
+        record["reference_motion"] = str(task_dir / "_ae_reference.bvh")
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -767,7 +795,7 @@ def run_task(
     generate_argv = [
         "--model_path", str(model_path),
         "--output_dir", str(task_dir),
-        *_COMMON_GENERATE_ARGS,
+        *_common_task_args(extra_args),
         *resolved_args,
     ]
     # Display command: only show differentiated (extra) args, not boilerplate flags.
@@ -802,10 +830,31 @@ def run_task(
     stdout = io.StringIO()
     returncode = 0
     task_args = None
+    is_ae = "--npy" in extra_args
     try:
-        task_args = generate_args(generate_argv)
         with contextlib.redirect_stdout(stdout):
-            generate_main(task_args, runtime=runtime)
+            if is_ae:
+                from sample import generate_ae
+                from data_loaders.truebones.truebones_utils.dataset_sources import species_file_token
+
+                metrics = generate_ae.main(generate_argv, runtime=runtime)
+                task_args = argparse.Namespace(cond_path=metrics["cond_path"])
+                cond = _register_cond_path(scorer, metrics["cond_path"])
+                if cond is None:
+                    raise ValueError("Cannot load autoencoder conditions for scoring")
+                for sample_index, sample in enumerate(metrics["samples"]):
+                    stem = Path(sample["motion_path"]).stem
+                    token = species_file_token(cond, sample["target_object_type"])
+                    for suffix in (".npy", ".bvh"):
+                        (task_dir / f"{stem}_reconstruction{suffix}").replace(
+                            task_dir / f"{token}_{sample_index}{suffix}")
+                        original_name = "_ae_reference" if sample_index == 0 else f"_ae_reference_{sample_index}"
+                        (task_dir / f"{stem}_original{suffix}").replace(
+                            task_dir / f"{original_name}{suffix}")
+                record["reference_motion"] = str(task_dir / "_ae_reference.bvh")
+            else:
+                task_args = generate_args(generate_argv)
+                generate_main(task_args, runtime=runtime)
     except SystemExit as exc:
         if exc.code not in (None, 0):
             returncode = int(exc.code) if isinstance(exc.code, int) else 1
@@ -819,7 +868,7 @@ def run_task(
     log_path.write_text(f"# {display_cmd}\n" + stdout.getvalue(), encoding="utf-8", errors="replace")
 
     if returncode != 0:
-        script = "generate.py"
+        script = "generate_ae.py" if is_ae else "generate.py"
         record["status"] = f"{script} failed (exit {returncode}) — see {log_path}"
         print(f"  [FAIL] {record['status']}")
         return record
@@ -913,7 +962,7 @@ def main() -> int:
         "--task_config", "--task-config", default=str(_DEFAULT_TASK_CONFIG),
         help="Path to the JSON file defining the task battery (absolute, or "
              "relative to the current working directory, falling back to the "
-             "Anytop dir). Default: eval/eval_tasks.json.",
+             "Anytop dir). Default: eval/eval_tasks_diffusion.json.",
     )
     parser.add_argument(
         "--filter", default=None,
@@ -948,6 +997,14 @@ def main() -> int:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"ERROR: invalid task config: {exc}", file=sys.stderr)
         return 1
+
+    ae_tasks = ["--npy" in extra_args for _, extra_args, _ in tasks]
+    if any(ae_tasks) and not all(ae_tasks):
+        print("ERROR: AE --npy tasks and diffusion tasks require separate configs", file=sys.stderr)
+        return 1
+    is_ae = all(ae_tasks)
+    if is_ae:
+        checkpoint = {**checkpoint, "TYPE": "autoencoder"}
 
     if args.model_path:
         model_path = Path(os.path.expanduser(os.path.expandvars(args.model_path)))
@@ -1014,6 +1071,9 @@ def main() -> int:
     def _ensure_runtime():
         nonlocal runtime
         if runtime is None:
+            if is_ae:
+                runtime = {}
+                return runtime
             print("Preparing shared generation runtime (loads checkpoint once)...")
             runtime_args = generate_args([
                 "--model_path", str(model_path),

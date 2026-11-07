@@ -1,0 +1,21 @@
+{
+  "_comment": "Quick battery for train_autoencoder_full.bat.",
+  "checkpoint": {
+    "RUN_NAME": "autoencoder_alpha_v1"
+  },
+  "tasks": [
+    {"category": "T1", "args": ["--object_type", "truebones/zoo/Dog", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Cat_Walk.npy"], "eval_label": "walk, forward"},
+    {"category": "T1", "args": ["--object_type", "truebones/zoo/Horse", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Dog_Running.npy"], "eval_label": "run, forward"},
+    {"category": "T1", "args": ["--object_type", "truebones/zoo/Flamingo", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Parrot_Fly.npy"], "eval_label": "fly, forward"},
+    {"category": "T1", "args": ["--object_type", "truebones/zoo/Eagle", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Giantbee_Fly.npy"], "eval_label": "fly, forward"},
+    {"category": "T1", "args": ["--object_type", "truebones/zoo/Elephant", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Dog-2_Swimturn.npy"], "eval_label": "swim, turn"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Cat", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Bat_Fly.npy"], "eval_label": "fly, forward"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Trex", "--npy", "dataset/truebones/zoo/truebones_processed/motions/SabreToothTiger_Swim.npy"], "eval_label": "swim"},
+    {"category": "T2", "args": ["--object_type", "KI_Human", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Comodoa_Run.npy"], "eval_label": "jump"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Buffalo", "--npy", "dataset/truebones/zoo/truebones_processed/motions/Tyranno_Walk.npy"], "eval_label": "walk"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Buffalo", "--npy", "dataset/unitybundles/processed/motions/KI_Human_Walk01Forwards.npy"], "eval_label": "walk"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Buffalo", "--npy", "dataset/unitybundles/processed/motions/KI_Human_Fall01.npy"], "eval_label": "fall"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Buffalo", "--npy", "dataset/unitybundles/processed/motions/KI_Human_Swim01Backwards.npy"], "eval_label": "swim"},
+    {"category": "T2", "args": ["--object_type", "truebones/zoo/Buffalo", "--npy", "dataset/unitybundles/processed/motions/KI_Human_Jump01.npy"], "eval_label": "jump"}
+  ]
+}

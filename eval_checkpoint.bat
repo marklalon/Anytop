@@ -5,8 +5,10 @@ REM Run the checkpoint evaluation battery + HTML report.
 REM
 REM Usage:
 REM   eval_checkpoint.bat <task_config.json> [extra eval args]
-REM   eval_checkpoint.bat eval\eval_tasks.json --overwrite
-REM   eval_checkpoint.bat eval\eval_tasks.json --no_review
+REM   eval_checkpoint.bat eval\eval_tasks_diffusion.json --overwrite
+REM   eval_checkpoint.bat eval\eval_tasks_diffusion.json --no_review
+REM   eval_checkpoint.bat eval\eval_tasks_ae.json
+REM     AE --npy tasks use sample/generate_ae.py and autoencoder.pt.
 REM   eval_checkpoint.bat <task_config.json> --kill-all-serve [extra eval args]
 REM     Stop all Python serve_report.py processes first, then run the evaluation.
 REM   eval_checkpoint.bat --kill-all-serve
@@ -14,6 +16,7 @@ REM     Stop all Python serve_report.py processes and exit without evaluating.
 REM
 REM The task config must define checkpoint.RUN_NAME. checkpoint.MODEL_FILE is
 REM optional; when omitted, eval_checkpoint.py selects the newest model*.pt
+REM for diffusion, or autoencoder.pt for AE tasks containing --npy,
 REM under save\<RUN_NAME>. checkpoint.OUTPUT_DIR is optional; it names the run
 REM folder the results are written under (default: RUN_NAME), which lets several
 REM batteries of one checkpoint keep separate outputs.
@@ -30,6 +33,8 @@ if "%~1"=="" (
 )
 
 set "TASK_CONFIG=%~1"
+REM Resolve caller-relative paths before switching to the Anytop directory.
+if exist "%~1" set "TASK_CONFIG=%~f1"
 shift
 
 REM Preserve all remaining arguments while making the task config explicit to

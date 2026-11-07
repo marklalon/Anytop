@@ -11,8 +11,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data_loaders.truebones.truebones_utils import canonical_features as cf
-from sample.eval_autoencoder import load_motion, reconstruct, resolve_cond_path
-from sample import eval_autoencoder as evaluator
+from sample.generate_ae import load_motion, reconstruct, resolve_cond_path
+from sample import generate_ae as evaluator
 
 
 def make_cond():

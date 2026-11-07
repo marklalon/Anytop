@@ -42,7 +42,7 @@ Its `--reference_motion` option is limited to same-rig img2img editing and requi
 TODO: Train dedicated models for inpaint/outpaint; motion diffusion does not provide these capabilities.
 See [docs/motion_autoencoder.md](docs/motion_autoencoder.md) for its architecture and training objective.
 Train with `train_autoencoder_tiny.bat [run_name]` or `train_autoencoder_all.bat [run_name]`;
-evaluate with `eval_autoencoder.bat --npy <preprocessed_motion.npy>`.
+evaluate with `generate_ae.bat --npy <preprocessed_motion.npy>`.
 The training presets retain the variational bottleneck and resume from the selected run.
 
 ### Evaluation

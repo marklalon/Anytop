@@ -132,10 +132,8 @@ def reconstruct(model, stored, object_type, cond, *, frames, is_loop, cycles, de
     return working_to_stored(physical, is_loop=is_loop), mse
 
 
-def main(argv=None):
-    args = parser().parse_args(argv)
-    if args.loop_cycles < 1:
-        raise ValueError('--loop_cycles must be positive')
+def prepare_runtime(args):
+    """Load model and conditions once for a battery of reconstruction tasks."""
     device = torch.device('cuda:0' if args.device == '0' else args.device)
     if args.amp_dtype == 'fp16' and device.type != 'cuda':
         raise ValueError('--amp_dtype fp16 requires CUDA')
@@ -155,6 +153,27 @@ def main(argv=None):
     frames = int(checkpoint['args']['num_frames'])
     cond_path = resolve_cond_path(checkpoint, model_path, args.cond_path)
     cond_dict = load_cond(str(cond_path))
+    return dict(model=model, checkpoint=checkpoint, model_path=model_path,
+                device=device, frames=frames, cond_path=cond_path, cond_dict=cond_dict)
+
+
+def main(argv=None, runtime=None):
+    args = parser().parse_args(argv)
+    if args.loop_cycles < 1:
+        raise ValueError('--loop_cycles must be positive')
+    # A caller-owned cache permits tasks with different cond/device overrides.
+    key = (str(Path(args.model_path).resolve()), args.device, args.cond_path)
+    if runtime is None:
+        loaded = prepare_runtime(args)
+    else:
+        if key not in runtime:
+            runtime[key] = prepare_runtime(args)
+        loaded = runtime[key]
+    model, checkpoint, model_path, device, frames, cond_path, cond_dict = (
+        loaded[name] for name in ('model', 'checkpoint', 'model_path', 'device',
+                                 'frames', 'cond_path', 'cond_dict'))
+    if args.amp_dtype == 'fp16' and device.type != 'cuda':
+        raise ValueError('--amp_dtype fp16 requires CUDA')
     target_object_type = resolve_species_key(cond_dict, args.object_type) if args.object_type else None
     if args.object_type and target_object_type is None:
         raise ValueError(f'Unknown target skeleton {args.object_type!r} in {cond_path}')
@@ -209,6 +228,7 @@ def main(argv=None):
                   latent='posterior mean' if model.variational else 'deterministic', samples=records)
     (out / 'reconstruction_metrics.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(f'[AE] Saved original/reconstruction .npy and .bvh pairs to {out.resolve()}')
+    return report
 
 
 if __name__ == '__main__':
