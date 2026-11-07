@@ -25,7 +25,7 @@ pushd "%SCRIPT_DIR%"
 	--head_word_weights attack,hurt=0.8,idle=0.6 ^
 	--train_split train ^
     --noise_schedule_shift 2 ^
-	--latent_dim 512 ^
+	--latent_dim 384 ^
 	--ff_size 2048 ^
 	--last_layer_ff 256 ^
 	--layers 8 ^

@@ -1,27 +1,11 @@
 @echo off
 setlocal EnableExtensions
-REM Train the full-dataset autoencoder. Usage: %~nx0 [run_name]
+REM Train the full-dataset autoencoder.
 set "SCRIPT_DIR=%~dp0"
 set "PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe"
 set "TORCHINDUCTOR_CUDAGRAPHS=1"
 set "AE_RUN_NAME=autoencoder_alpha_v1"
-if /i "%~1"=="--help" goto :usage
-if /i "%~1"=="-h" goto :usage
-if not "%~2"=="" goto :invalid_args
-set "ARG=%~1"
-if "%ARG:~0,1%"=="-" goto :invalid_args
-if not "%~1"=="" set "AE_RUN_NAME=%~1"
-if not exist "%PYTHON_EXE%" (
-    echo ERROR: Python environment not found: "%PYTHON_EXE%"
-    exit /b 1
-)
 pushd "%SCRIPT_DIR%"
-if errorlevel 1 exit /b 1
-if not exist "dataset\cond_all.npy" (
-    echo ERROR: Run preprocess_all_datasets.bat first.
-    popd
-    exit /b 1
-)
 "%PYTHON_EXE%" train/train_autoencoder.py ^
     --cond_path dataset/cond_all.npy ^
     --save_dir "save/%AE_RUN_NAME%" ^
@@ -38,8 +22,8 @@ if not exist "dataset\cond_all.npy" (
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
     --auto_resume ^
-    --encoder_width 512 ^
-    --decoder_width 512 ^
+    --encoder_width 384 ^
+    --decoder_width 384 ^
     --encoder_layers 4 ^
     --decoder_layers 8 ^
     --encoder_ff_size 2048 ^
@@ -80,10 +64,3 @@ if not exist "dataset\cond_all.npy" (
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 endlocal & exit /b %EXIT_CODE%
-:invalid_args
-echo ERROR: Expected at most one run name.
-echo Usage: %~nx0 [run_name]
-exit /b 2
-:usage
-echo Usage: %~nx0 [run_name]
-exit /b 0
