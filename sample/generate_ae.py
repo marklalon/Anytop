@@ -25,6 +25,7 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     physical_hml_to_canonical, stored_to_working, working_to_stored,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.param_utils import MAX_SOURCE_FRAMES_MULT
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key, species_lookup_map
 from data_loaders.truebones.truebones_utils.param_utils import FPS
 from utils.model_config import without_removed_options
@@ -100,6 +101,12 @@ def reconstruct(model, stored, object_type, cond, *, frames, is_loop, cycles, de
         if target_object_type != object_type:
             raise ValueError('A different target skeleton requires target_cond')
         target_cond = cond
+    max_input_frames = MAX_SOURCE_FRAMES_MULT * int(frames)
+    if len(stored) > max_input_frames:
+        raise ValueError(
+            f"Input motion has {len(stored)} frames; maximum is 2N={max_input_frames} "
+            f"for model window N={int(frames)}."
+        )
     working = stored_to_working(stored)
     window = resample_motion_features(working, frames, periodic=is_loop)
     canonical = physical_hml_to_canonical(window, cond)
@@ -196,6 +203,12 @@ def main(argv=None, runtime=None):
             ensure_joint_name_embeddings({key: cond_dict[key]}, expected_embedding_dim=model.config['t5_out_dim'],
                                          cond_source=str(cond_path))
         stored = load_motion(path, cond)
+        max_input_frames = MAX_SOURCE_FRAMES_MULT * frames
+        if len(stored) > max_input_frames:
+            raise ValueError(
+                f"Input motion {path} has {len(stored)} frames; maximum is 2N={max_input_frames} "
+                f"for model window N={frames}."
+            )
         is_loop = (reference_loop_verdict(stored, 0)[0] if args.loop == 'auto' else args.loop == 'on')
         if path.stem in stems:
             raise ValueError(f'Duplicate input filename stem: {path.stem}; use separate output directories')

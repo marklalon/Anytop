@@ -682,6 +682,12 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"Reference motion must have shape (T, J, F), got {ref_features_full.shape}"
             )
         R = int(ref_features_full.shape[0])
+        max_reference_frames = MAX_SOURCE_FRAMES_MULT * internal_num_frames
+        if R > max_reference_frames:
+            raise ValueError(
+                f"Reference motion has {R} frames; maximum is 2N={max_reference_frames} "
+                f"for model window N={internal_num_frames}."
+            )
 
         # The loop condition, off the reference as it will fill the window,
         # on the target skeleton (same species), so the target's root indexes it.
@@ -698,7 +704,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
         # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
-            auto_frames = int(np.clip(R, min_length, MAX_SOURCE_FRAMES_MULT * internal_num_frames))
+            auto_frames = int(np.clip(R, min_length, max_reference_frames))
             requested_output_frames, target_output_frames, resample_speed_cond_value = (
                 _finalize_output_lengths(auto_frames, min_length, internal_num_frames)
             )
@@ -725,6 +731,7 @@ def main(args=None, cond_dict=None, runtime=None):
             target_feature_len=model.feature_len,
             batch_size=args.batch_size,
             requested_output_frame_count=n_frames,
+            internal_num_frames=internal_num_frames,
             requested_visible_frame_count=target_output_frames,
             preloaded_features=ref_features_full,
             min_length=min_length,

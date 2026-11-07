@@ -80,6 +80,7 @@ def _prepare_img2img_reference_bundle(
     target_feature_len,
     batch_size,
     requested_output_frame_count,
+    internal_num_frames=None,
     requested_visible_frame_count=None,
     min_length=20,
     preloaded_features=None,
@@ -96,6 +97,13 @@ def _prepare_img2img_reference_bundle(
         )
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
+    if internal_num_frames is not None:
+        max_reference_frames = int(internal_num_frames) * MAX_SOURCE_FRAMES_MULT
+        if loaded_reference_frame_count > max_reference_frames:
+            raise ValueError(
+                f"Reference motion has {loaded_reference_frame_count} frames; maximum is "
+                f"2N={max_reference_frames} for model window N={int(internal_num_frames)}."
+            )
     # Fixed-window model: always run at native window length (num_frames);
     # resample reference up to it like pure generation, then resample output
     # to target_output_frames afterwards.
