@@ -31,40 +31,6 @@ def motion_masks(x, skeleton, frame_mask=None):
     return joint, frame_mask.bool()
 
 
-class TemporalResidualConv(nn.Module):
-    """Per-joint local refinement: depthwise temporal conv + channel mixing.
-
-    Loop rows wrap at their valid length; open rows replicate edge frames.
-    Frame masks describe right padding. Zero-init mixing starts as identity.
-    """
-
-    def __init__(self, width, kernel):
-        super().__init__()
-        if kernel < 1 or kernel % 2 == 0:
-            raise ValueError('Temporal convolution kernel must be positive and odd')
-        self.radius = kernel // 2
-        self.norm = nn.LayerNorm(width)
-        self.depthwise = nn.Conv1d(width, width, kernel, groups=width)
-        self.mix = nn.Conv1d(width, width, 1)
-        nn.init.zeros_(self.mix.weight)
-        nn.init.zeros_(self.mix.bias)
-
-    def forward(self, tokens, frame, loop_metadata=None):
-        frames, batch, joints, width = tokens.shape
-        length = frame.sum(-1)[:, None].clamp_min(1)
-        position = torch.arange(-self.radius, frames + self.radius, device=tokens.device)[None]
-        is_loop = (loop_metadata or {}).get(
-            'is_loop', torch.zeros(batch, device=tokens.device, dtype=torch.bool))
-        indices = torch.where(is_loop[:, None], position % length,
-                              torch.minimum(position.clamp_min(0), length - 1))
-        values = self.norm(tokens).permute(1, 2, 3, 0)
-        values = values.gather(-1, indices[:, None, None].expand(batch, joints, width, -1))
-        values = values.reshape(batch * joints, width, -1)
-        delta = self.mix(torch.nn.functional.gelu(self.depthwise(values)))
-        delta = delta.reshape(batch, joints, width, frames).permute(3, 0, 1, 2)
-        return tokens + delta.masked_fill(~frame.T[:, :, None, None], 0)
-
-
 class MotionAutoencoder(nn.Module):
     """Motion-content flows only through frame-aligned z.
 
@@ -77,7 +43,7 @@ class MotionAutoencoder(nn.Module):
 
     def __init__(self, t5_out_dim, width=128, layers=2, heads=4, slots=8, latent_dim=32,
                  ff_size=0, last_layer_ff=0,
-                 layerwise_latent=False, decoder_temporal_kernel=0, variational=False,
+                 layerwise_latent=False, variational=False,
                  dropout_prob=0.0,
                  encoder_layers=None, decoder_layers=None,
                  encoder_width=None, decoder_width=None,
@@ -102,12 +68,9 @@ class MotionAutoencoder(nn.Module):
                            heads=heads, slots=slots, latent_dim=latent_dim,
                            ff_size=ff_size, last_layer_ff=last_layer_ff,
                            layerwise_latent=layerwise_latent,
-                           decoder_temporal_kernel=decoder_temporal_kernel, variational=variational,
-                           dropout_prob=dropout_prob)
+                           variational=variational, dropout_prob=dropout_prob)
         if not 0 <= dropout_prob <= 1:
             raise ValueError(f'Invalid dropout_prob: {dropout_prob}')
-        if decoder_temporal_kernel < 0 or (decoder_temporal_kernel and decoder_temporal_kernel % 2 == 0):
-            raise ValueError('decoder_temporal_kernel must be zero or a positive odd number')
         if any((dim // heads) % 2 for dim in (encoder_width, decoder_width)):
             raise ValueError('Temporal RoPE requires an even head dimension')
         self.variational = variational
@@ -144,9 +107,6 @@ class MotionAutoencoder(nn.Module):
         # loops. Shared by E/D; zero-init heads start as a no-op.
         self.tempo_projection = _zero_init_mlp(width)
         self.loop_period_projection = _zero_init_mlp(width)
-        # Append after all shared initialization to keep the baseline weights identical.
-        self.temporal_refinement = (TemporalResidualConv(decoder_width, decoder_temporal_kernel)
-                                    if decoder_temporal_kernel else None)
         self.to_logvar = nn.Linear(width, latent_dim) if variational else None
         if self.to_logvar is not None:
             nn.init.zeros_(self.to_logvar.weight)
@@ -314,8 +274,6 @@ class MotionAutoencoder(nn.Module):
         tokens = queries + read.reshape(frames, batch, joints, self.decoder_width)
         tokens = self._trunk(self.decoder, tokens, skeleton, joint, frame, loop_metadata,
                              z if self.layerwise_latent else None)
-        if self.temporal_refinement is not None:
-            tokens = self.temporal_refinement(tokens, frame, loop_metadata)
         out = self.output(tokens).permute(1, 2, 3, 0)
         return out.masked_fill(~(joint[:, :, None, None] & frame[:, None, None, :]), 0)
 

@@ -4,6 +4,7 @@ REMOVED_MODEL_OPTIONS = frozenset((
     'rest_geom_drop_prob', 'mirror_twin_drop_prob', 'lateral_drop_prob',
     'decoder_mirror_twin_drop_prob', 'decoder_lateral_drop_prob',
     'temporal_rope', 'cross_limb_dim', 'cross_limb_last_n',
+    'decoder_temporal_kernel',
 ))
 
 

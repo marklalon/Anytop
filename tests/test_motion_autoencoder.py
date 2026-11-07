@@ -10,9 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from data_loaders.reference import REST_GEOM_DIM
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
-from model.motion_autoencoder import (
-    MotionAutoencoder, TemporalResidualConv, to_working_motion,
-)
+from model.motion_autoencoder import MotionAutoencoder, to_working_motion
 from train.train_autoencoder import reconstruction_mse, scaled_optimizer_step
 
 
@@ -322,8 +320,7 @@ def test_independent_widths_and_ff_sizes_roundtrip(encoder_width, decoder_width)
     model, x, skeleton = fixture(
         encoder_width=encoder_width, decoder_width=decoder_width,
         encoder_ff_size=20, decoder_ff_size=40, last_layer_ff=12,
-        decoder_layers=2, variational=True,
-        layerwise_latent=True, decoder_temporal_kernel=3,
+        decoder_layers=2, variational=True, layerwise_latent=True,
     )
     assert model.encoder.layers[0].linear1.out_features == 20
     assert model.decoder.layers[0].linear1.out_features == 40
@@ -445,9 +442,8 @@ def test_temporal_stride_is_removed():
 
 
 @pytest.mark.parametrize('joints,frames', [(1, 1), (4, 5), (7, 2)])
-@pytest.mark.parametrize('kernel', [0, 5])
-def test_complete_channels_latent_and_gradients(joints, frames, kernel):
-    model, x, s = fixture(joints, frames, decoder_temporal_kernel=kernel)
+def test_complete_channels_latent_and_gradients(joints, frames):
+    model, x, s = fixture(joints, frames)
     x.requires_grad_()
     z = model.encode(x, s)
     assert z.shape == (2, frames, 2, 4)
@@ -463,13 +459,9 @@ def test_complete_channels_latent_and_gradients(joints, frames, kernel):
 
 @pytest.mark.parametrize('loop', [False, True])
 @pytest.mark.parametrize('attention', [False, True])
-@pytest.mark.parametrize('kernel', [0, 5])
-def test_joint_and_time_padding_do_not_change_valid_output(loop, attention, kernel):
+def test_joint_and_time_padding_do_not_change_valid_output(loop, attention):
     options = dict(layerwise_latent=True, ff_size=32, last_layer_ff=16) if attention else {}
-    model, x, s = fixture(**options, decoder_temporal_kernel=kernel)
-    if kernel:
-        # Exercise a learned, non-identity residual, including boundary padding.
-        torch.nn.init.normal_(model.temporal_refinement.mix.weight, std=.05)
+    model, x, s = fixture(**options)
     frame = torch.ones(2, 5, dtype=torch.bool)
     metadata = dict(is_loop=torch.full((2,), loop), loop_tile_count=torch.ones(2))
     expected = model(x, s, frame, metadata)
@@ -560,7 +552,7 @@ def test_layerwise_latent_reader_has_gradients_and_no_dynamic_bypass():
 
 
 def test_attention_autoencoder_compiles_as_one_graph():
-    model, x, s = fixture(layerwise_latent=True, decoder_temporal_kernel=5)
+    model, x, s = fixture(layerwise_latent=True)
     metadata = dict(is_loop=torch.tensor([True, False]), loop_tile_count=torch.ones(2),
                     resample_speed_cond=torch.tensor([.5, 1.5]))
     compiled = torch.compile(model, backend='eager', fullgraph=True)
@@ -596,7 +588,7 @@ def test_amp_unscales_before_clipping_and_preserves_weights_on_overflow():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA AMP required')
 def test_autoencoder_fp16_forward_backward_keeps_fp32_parameters():
-    model, x, s = fixture(layerwise_latent=True, decoder_temporal_kernel=5)
+    model, x, s = fixture(layerwise_latent=True)
     model = model.cuda().train()
     x, s = x.cuda(), {k: v.cuda() for k, v in s.items()}
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -608,34 +600,6 @@ def test_autoencoder_fp16_forward_backward_keeps_fp32_parameters():
     norm, updated = scaled_optimizer_step(loss, model, optimizer, scaler)
     assert updated and torch.isfinite(norm)
     assert all(p.dtype == torch.float32 and torch.isfinite(p).all() for p in model.parameters())
-
-
-def test_temporal_residual_starts_identical_to_baseline_and_learns():
-    baseline, x, s = fixture()
-    model, _, _ = fixture(decoder_temporal_kernel=5)
-    for key, value in baseline.state_dict().items():
-        torch.testing.assert_close(model.state_dict()[key], value, rtol=0, atol=0)
-    expected = baseline(x, s)
-    actual = model(x, s)
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-    actual.square().mean().backward()
-    assert model.temporal_refinement.mix.weight.grad.abs().sum() > 0
-
-
-def test_temporal_convolution_wraps_only_loop_rows_and_does_not_mix_joints():
-    block = TemporalResidualConv(2, 5)
-    with torch.no_grad():
-        block.depthwise.weight.fill_(1)
-        block.depthwise.bias.zero_()
-        block.mix.weight.copy_(torch.eye(2).reshape(2, 2, 1))
-        block.mix.bias.zero_()
-    tokens = torch.zeros(7, 2, 2, 2)
-    tokens[-1, :, 0] = torch.tensor([1., -1.])
-    actual = block(tokens, torch.ones(2, 7, dtype=torch.bool),
-                   dict(is_loop=torch.tensor([True, False])))
-    assert actual[0, 0, 0].abs().sum() > 0
-    assert actual[0, 1, 0].count_nonzero() == 0
-    assert actual[:, :, 1].count_nonzero() == 0
 
 
 def test_prefetch_transform_filters_reference_and_keeps_nine_channels():
