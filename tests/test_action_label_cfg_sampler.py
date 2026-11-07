@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
     JOINT_STRUCT_DIM,
 )
@@ -71,7 +72,6 @@ def _make_model():
         num_heads=2,
         dropout=0.0,
         t5_out_dim=T5_DIM,
-        action_label_cond=True,
         action_label_cfg_drop_prob=0.2,
         action_conditioning=make_test_bundle(),
     )
@@ -83,6 +83,7 @@ def _make_y():
         'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
+        'species_code': torch.zeros(2, species_code_dim(T5_DIM)),
         'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),

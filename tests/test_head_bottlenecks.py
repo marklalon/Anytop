@@ -28,8 +28,7 @@ def _args(**overrides):
     a = SimpleNamespace(
         t5_out_dim=T5, latent_dim=D, ff_size=FF, layers=L, dropout_prob=0.0,
         value_emb=False,
-        species_cond=True,
-        joint_name_drop_prob=0.0, action_label_cond=True,
+        joint_name_drop_prob=0.0,
         action_conditioning=None,
     )
     for k, v in overrides.items():

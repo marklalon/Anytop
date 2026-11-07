@@ -86,19 +86,18 @@ def test_legacy_selection_and_missing_statistics(tmp_path):
 def test_inference_slots_follow_completed_label_and_off_preserves_prompt(tmp_path):
     save_direction_prior(prior_for(('run, forward', 1)), tmp_path)
     args = SimpleNamespace(action_label='run', model_path=str(tmp_path / 'model.pt'), seed=5)
-    model = SimpleNamespace(action_label_cond=True)
-    completed = _resolve_action_condition(args, model)
+    completed = _resolve_action_condition(args)
     assert completed['action_label'] == 'run, forward'
     assert completed['action_slots']['word_mask'].sum() == 2
     args.auto_direction = 'off'
-    original = _resolve_action_condition(args, model)
+    original = _resolve_action_condition(args)
     assert original['action_label'] == 'run'
     assert original['action_slots']['word_mask'].sum() == 1
     args.auto_direction = 'auto'
     args.action_label = 'run, backward'
-    assert _resolve_action_condition(args, model)['action_label'] == 'run, backward'
+    assert _resolve_action_condition(args)['action_label'] == 'run, backward'
     args.action_label = ''
-    assert _resolve_action_condition(args, model) is None
+    assert _resolve_action_condition(args) is None
 
 
 def test_backfill_tool_uses_saved_selection(tmp_path):
@@ -124,4 +123,4 @@ def test_auto_direction_is_a_generation_override(tmp_path):
 
 def test_missing_prior_does_not_break_legacy_inference(tmp_path):
     args = SimpleNamespace(action_label='run', model_path=str(tmp_path / 'model.pt'))
-    assert _resolve_action_condition(args, SimpleNamespace(action_label_cond=True))['action_label'] == 'run'
+    assert _resolve_action_condition(args)['action_label'] == 'run'

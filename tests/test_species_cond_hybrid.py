@@ -54,7 +54,7 @@ class _ProbeHead(torch.nn.Module):
         return self.real(inp)
 
 
-def _make_model(species_cond=False, **extra):
+def _make_model(**extra):
     return MotionDiffusion(
         max_joints=4,
         feature_len=12,
@@ -64,7 +64,6 @@ def _make_model(species_cond=False, **extra):
         num_heads=2,
         dropout=0.0,
         t5_out_dim=T5_DIM,
-        species_cond=species_cond,
         **extra,
     )
 
@@ -104,14 +103,8 @@ def _make_y(species_code=None, **extra):
 
 
 class SpeciesHybridTest(unittest.TestCase):
-    def test_disabled_by_default(self):
-        model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=8, ff_size=32,
-                       num_layers=1, num_heads=2, dropout=0.0)
-        self.assertFalse(model.species_cond)
-        self.assertIsNone(model.input_process.species_film_j)
-
     def test_training_never_drops_species(self):
-        model = _make_model(species_cond=True).train()
+        model = _make_model().train()
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         model.seqTransDecoder = _CaptureDecoder()
         x, t = torch.randn(2, 4, 12, 3), torch.tensor([1, 2])
@@ -125,11 +118,8 @@ class SpeciesHybridTest(unittest.TestCase):
                 self.assertFalse(torch.allclose(first[row], second[row]))
 
     def test_joint_cond_film_keeps_text_embedding_dim(self):
-        plain = _make_model()
-        fused = _make_model(species_cond=True)
-        self.assertEqual(plain.input_process.text_embedding.in_features, T5_DIM)
+        fused = _make_model()
         self.assertEqual(fused.input_process.text_embedding.in_features, T5_DIM)
-        self.assertIsNone(plain.input_process.species_film_j)
         # concat([joint_emb, species_code]) in, (gamma_residual, beta) out.
         self.assertEqual(fused.input_process.species_film_j[0].in_features,
                          T5_DIM + T5_DIM + len(SPECIES_VARIANTS))
@@ -141,26 +131,26 @@ class SpeciesHybridTest(unittest.TestCase):
         for width in (8, 16, 32):
             model = MotionDiffusion(max_joints=4, feature_len=12, latent_dim=width,
                                     ff_size=32, num_layers=1, num_heads=2,
-                                    species_cond=True, t5_out_dim=T5_DIM)
+                                    t5_out_dim=T5_DIM)
             self.assertEqual(model.input_process.species_film_j[0].out_features, width)
             self.assertEqual(model.input_process.species_film_j[-1].in_features, width)
 
     def test_joint_cond_film_starts_at_identity(self):
-        model = _make_model(species_cond=True)
+        model = _make_model()
         model.eval()
         ip = model.input_process
         x, rest_pose, joints, species = _joint_cond_inputs()
         joint_struct = _joint_struct(*joints.shape[:2])
         with torch.no_grad():
             fused = ip(x, rest_pose, joints, None, joint_struct, species_code=species)
-            ip.species_film_j = None  # bypass the FiLM fusion entirely
-            plain = ip(x, rest_pose, joints, None, joint_struct)
-        self.assertTrue(torch.allclose(fused, plain))
+            other = ip(x, rest_pose, joints, None, joint_struct,
+                       species_code=torch.randn_like(species))
+        self.assertTrue(torch.allclose(fused, other))
 
     def test_joint_cond_film_differentiates_across_joints(self):
         """The whole point of the FiLM head: gamma must vary per joint. The additive
         form it replaced could not -- it added one per-species constant to every joint."""
-        model = _make_model(species_cond=True)
+        model = _make_model()
         head = model.input_process.species_film_j
         torch.nn.init.normal_(head[-1].weight, std=0.5)
         joints = torch.randn(1, 4, T5_DIM)
@@ -170,7 +160,7 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertGreater(gamma_residual.std(dim=1).mean().item(), 1e-4)
 
     def test_variant_axis_moves_the_film(self):
-        model = _make_model(species_cond=True)
+        model = _make_model()
         ip = model.input_process
         torch.nn.init.normal_(ip.species_film_j[-1].weight, std=0.5)
         x, rest_pose, joints, _ = _joint_cond_inputs(batch=2)
@@ -186,7 +176,7 @@ class SpeciesHybridTest(unittest.TestCase):
 
     def test_joint_cond_film_reads_the_same_names_as_projection(self):
         """The identity FiLM head and projection read the supplied names."""
-        model = _make_model(species_cond=True)
+        model = _make_model()
         ip = model.input_process
         film = _ProbeHead(ip.species_film_j)
         text = _ProbeHead(ip.text_embedding)
@@ -199,16 +189,14 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertTrue(torch.allclose(joint_part, text.last_input))
         self.assertTrue(torch.allclose(joint_part, joints))
 
-    def test_species_code_must_match_the_module(self):
-        x, rest_pose, joints, species = _joint_cond_inputs()
+    def test_input_process_requires_species_code(self):
+        x, rest_pose, joints, _ = _joint_cond_inputs()
         struct = _joint_struct(*joints.shape[:2])
         with self.assertRaises(ValueError):
-            _make_model(species_cond=True).input_process(x, rest_pose, joints, None, struct)
-        with self.assertRaises(ValueError):
-            _make_model().input_process(x, rest_pose, joints, None, struct, species_code=species)
+            _make_model().input_process(x, rest_pose, joints, None, struct)
 
-    def test_species_cond_requires_species_code(self):
-        model = _make_model(species_cond=True)
+    def test_forward_requires_species_code(self):
+        model = _make_model()
         model.eval()
         model.seqTransDecoder = _CaptureDecoder()
         x = torch.randn(2, 4, 12, 3, dtype=torch.float32)
@@ -218,7 +206,7 @@ class SpeciesHybridTest(unittest.TestCase):
 
     def test_species_reaches_the_decoder_only_through_the_input(self):
         """No sample-level path: the timestep bus does not carry the species."""
-        model = _make_model(species_cond=True).eval()
+        model = _make_model().eval()
         torch.nn.init.normal_(model.input_process.species_film_j[-1].weight, std=0.1)
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
@@ -234,7 +222,7 @@ class SpeciesHybridTest(unittest.TestCase):
         self.assertFalse(torch.allclose(seen[0]['tgt'], seen[1]['tgt']))
 
     def test_full_forward_joint_condition(self):
-        model = _make_model(species_cond=True)
+        model = _make_model()
         model.eval()
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture

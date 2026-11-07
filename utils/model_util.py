@@ -197,13 +197,10 @@ def load_checkpoint_weights(payload, source: str, prefer_ema: bool, align_vocab:
 def bind_checkpoint_action_conditioning(model, metadata, source: str):
     """Certify the loaded weights against the contract they were trained under."""
     unwrapped = unwrap_motion_diffusion_model(model)
-    if not getattr(unwrapped, 'action_label_cond', False):
-        return None
     action_conditioning = (metadata or {}).get('action_conditioning')
     if action_conditioning is None:
         raise ActionConditioningError(
-            f"{source} was saved by a model with no action conditioning, but this run "
-            "builds one with --action_label_cond."
+            f"{source} was saved by a model with no action conditioning."
         )
     return unwrapped.validate_loaded_action_conditioning(action_conditioning, source)
 
@@ -227,10 +224,8 @@ def get_gmdm_args(args):
             'max_joints': max_joints, 
             'feature_len':feature_len,  'value_emb': args.value_emb,
             'last_layer_ff': getattr(args, 'last_layer_ff', 0),
-            'species_cond': getattr(args, 'species_cond', False),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             'rest_geom_joint_drop_prob': getattr(args, 'rest_geom_joint_drop_prob', 0.1),
-            'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             # The training entry point builds one bundle and hands the same
             # object to the loader and to the model. Absent at inference: there

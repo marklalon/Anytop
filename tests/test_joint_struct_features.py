@@ -19,6 +19,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
@@ -305,8 +306,9 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
         names = torch.zeros(1, 4, 32)
         with torch.no_grad():
             raw = process.struct_embedding(struct)
-            out = process(x, rest_geom, names, valid, struct)
-            bare = process(x, torch.zeros_like(rest_geom), names, torch.zeros_like(valid), struct)
+            out = process(x, rest_geom, names, valid, struct, species_code=torch.zeros(1, species_code_dim(32)))
+            bare = process(x, torch.zeros_like(rest_geom), names, torch.zeros_like(valid), struct,
+                           species_code=torch.zeros(1, species_code_dim(32)))
         self.assertGreater(float(raw[0, 2:].abs().max()), 0.0)
         # Padding rows get no static channel at all: they match a forward in
         # which every joint is padding.
@@ -318,6 +320,7 @@ class PaddingSurvivesTheProjection(unittest.TestCase):
             process(
                 torch.randn(1, 4, FEATS_LEN, 3), torch.randn(1, 4, REST_GEOM_DIM),
                 torch.randn(1, 4, 32), torch.ones(1, 4, dtype=torch.bool),
+                species_code=torch.zeros(1, species_code_dim(32)),
             )
 
 

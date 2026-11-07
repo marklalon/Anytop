@@ -13,7 +13,6 @@ def build_validation_loader(args, batch_transform=None):
             # Validation never inherits the training clip filter.
             sample_filter=None,
             sample_filter_seed=args.seed, shuffle=False, drop_last=False,
-            action_label_cond=getattr(args, 'action_label_cond', False),
             action_conditioning=getattr(args, 'action_conditioning', None),
             species_table=getattr(args, 'species_descriptor_table', None),
             motion_cache_size=args.motion_cache_size,

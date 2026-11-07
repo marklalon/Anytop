@@ -30,7 +30,6 @@ from data_loaders.truebones.truebones_utils.joint_struct_features import (
 )
 from data_loaders.truebones.truebones_utils.species_descriptor_table import species_code
 from model.cfg_sampler import ClassifierFreeActionModel
-from utils.model_util import unwrap_motion_diffusion_model
 
 
 def _parse_species_tags(raw):
@@ -46,7 +45,7 @@ def _parse_species_tags(raw):
     return list(tags)
 
 
-def _resolve_species_code_override(args, model, cond_dict, object_type, species_table):
+def _resolve_species_code_override(args, cond_dict, object_type, species_table):
     """``--species_tags`` -> a ``[species_code_dim]`` species code, or ``None``.
 
     Restyles the target species' motion descriptor with a row of the
@@ -57,16 +56,6 @@ def _resolve_species_code_override(args, model, cond_dict, object_type, species_
     if not species_tags:
         return None
 
-    # Fast-fail if checkpoint ignores species descriptor.
-    unwrapped = unwrap_motion_diffusion_model(model)
-    if not getattr(unwrapped, 'species_cond', False):
-        sys.exit(
-            'ERROR: --species_tags was passed but this checkpoint was trained without '
-            '--species_cond; the species descriptor is unused, so '
-            'the tags would have no effect.'
-        )
-    if species_table is None:
-        sys.exit("ERROR: --species_tags needs the checkpoint's species descriptor table.")
     try:
         species_code_override = species_code(species_table, species_tags, '--species_tags')
     except ValueError as exc:
@@ -81,7 +70,7 @@ def _resolve_species_code_override(args, model, cond_dict, object_type, species_
     return species_code_override
 
 
-def _resolve_action_condition(args, model):
+def _resolve_action_condition(args):
     """Resolve ``--action_label`` into the model's slot condition.
 
     Returns ``None`` when no label was requested (the model then falls back to its
@@ -107,12 +96,6 @@ def _resolve_action_condition(args, model):
         parse_action_label,
     )
 
-    unwrapped = unwrap_motion_diffusion_model(model)
-    if not getattr(unwrapped, 'action_label_cond', False):
-        sys.exit(
-            'ERROR: --action_label was passed but this checkpoint was trained '
-            'without --action_label_cond. The label would have no effect.'
-        )
     # Labels are exact controlled tokens. An unrecognized one is a HARD ERROR,
     # not a pass-through: there is no synonym translation any more, and letting
     # free text through would sample from wherever T5 puts an out-of-distribution

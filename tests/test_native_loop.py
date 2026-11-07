@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
@@ -428,6 +429,7 @@ class NativeLoopTests(unittest.TestCase):
             'rest_geom': torch.randn(2, 4, REST_GEOM_DIM, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            'species_code': torch.zeros(2, species_code_dim(512)),
             'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the frame.
             'canonical_feature_mean': torch.zeros(12, dtype=torch.float32),

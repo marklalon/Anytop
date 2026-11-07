@@ -13,6 +13,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from data_loaders.reference import REST_GEOM_DIM  # noqa: E402
 from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM  # noqa: E402
 from model.motion_diffusion import MotionDiffusion, create_sin_embedding  # noqa: E402
@@ -57,6 +58,7 @@ def _y(batch, **extra):
         'rest_geom': torch.zeros(batch, 4, REST_GEOM_DIM),
         'n_joints': torch.full((batch,), 4, dtype=torch.int64),
         'joints_names_embs': torch.zeros(batch, 4, T5_DIM),
+        'species_code': torch.zeros(batch, species_code_dim(T5_DIM)),
         'joint_struct': torch.zeros(batch, 4, JOINT_STRUCT_DIM),
         'resample_speed_cond': torch.ones(batch),
     }

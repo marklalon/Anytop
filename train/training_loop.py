@@ -278,7 +278,6 @@ class TrainLoop:
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
                 drop_last=False,
-                action_label_cond=getattr(self.args, 'action_label_cond', False),
                 action_conditioning=getattr(self.args, 'action_conditioning', None),
                 species_table=getattr(self.args, 'species_descriptor_table', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
@@ -417,8 +416,6 @@ class TrainLoop:
         buffer-level half is bind_checkpoint_action_conditioning, which can only
         run once those buffers ARE the checkpoint's.
         """
-        if not getattr(unwrap_motion_diffusion_model(self.model), 'action_label_cond', False):
-            return
         action_conditioning = (metadata or {}).get('action_conditioning') or {}
         bundle = getattr(self.args, 'action_conditioning', None)
         if bundle is None:

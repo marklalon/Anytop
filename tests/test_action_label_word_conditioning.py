@@ -63,7 +63,7 @@ from tests.action_label_test_utils import (  # noqa: E402
 
 
 def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
-           action_label_cond=True, eval_mode=True):
+           eval_mode=True):
     # MotionDiffusion.train() drops nn.Module.train's return value, so .eval() cannot be
     # chained onto the constructor here.
     model = MotionDiffusion(
@@ -75,9 +75,8 @@ def _model(bundle=None, latent_dim=TEST_LATENT_DIM, drop_prob=0.0,
         num_heads=2,
         dropout=0.0,
         t5_out_dim=TEST_T5_DIM,
-        action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=drop_prob,
-        action_conditioning=bundle if action_label_cond else None,
+        action_conditioning=bundle,
     )
     if eval_mode:
         model.eval()
@@ -305,7 +304,7 @@ def test_word_table_from_another_encoder_is_refused():
         MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0,
-            t5_out_dim=TEST_T5_DIM // 2, action_label_cond=True,
+            t5_out_dim=TEST_T5_DIM // 2,
             action_conditioning=bundle,
         )
 
@@ -327,7 +326,7 @@ def test_a_rank_deficient_word_table_is_refused_at_construction():
         MotionDiffusion(
             max_joints=4, feature_len=12, latent_dim=TEST_LATENT_DIM, ff_size=32,
             num_layers=1, num_heads=2, dropout=0.0,
-            t5_out_dim=384, action_label_cond=True, action_conditioning=bundle,
+            t5_out_dim=384, action_conditioning=bundle,
         )
 
 
@@ -508,15 +507,6 @@ def test_a_checkpoint_whose_table_did_not_load_is_refused():
     empty = _model(None)
     with pytest.raises(ActionConditioningError, match="did not load"):
         empty.validate_loaded_action_conditioning(metadata, source='model.pt')
-
-
-def test_unconditioned_model_ignores_action_fields():
-    model = _model(None, action_label_cond=False)
-    assert model.action_conditioning_metadata is None
-    assert model._build_action_label_token(
-        action_cond_fields(['walk, forward'], ['locomotion']), 1,
-        torch.device('cpu'), torch.float32,
-    ) is None
 
 
 def test_slot_assembly_has_exactly_one_definition():

@@ -29,8 +29,6 @@ pushd "%SCRIPT_DIR%"
 	--ff_size 2048 ^
 	--last_layer_ff 256 ^
 	--layers 8 ^
-	--action_label_cond ^
-	--species_cond ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^
 	--topology_aug_prob 0.2 ^

@@ -37,7 +37,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets_all.jsonl
 
 | 契约 | 组成 | 消费者 |
 |---|---|---|
-| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`（+ `--action_label_cond` 时全局一份 `dataset/action_word_embeddings.npy`） | `train_motion_diffusion.py`、`Truebones` dataset |
+| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`（+ 全局一份 `dataset/action_word_embeddings.npy`） | `train_motion_diffusion.py`、`Truebones` dataset |
 | **推理契约** | `cond.npy` **单文件**（自足，不依赖任何数据集目录） | `generate.py`、`server/`、`process_new_skeleton`、跨骨架 retarget |
 
 `cond.npy` 是唯一入口：训练时它告诉加载器「有哪些物种、动作数据在哪」；推理时它自带全部条件（含烘焙的 species tags）。

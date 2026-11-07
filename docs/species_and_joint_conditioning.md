@@ -77,7 +77,6 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 - variant 的训练样本只来自少数几个 rig 家族（Clanking 主要是 RU01 机器人，Waddling 主要是 MU01 / TTR），覆盖到其他骨架时效果可能偏弱；跨骨架迁移动作风格用 motion autoencoder；
 - 相似度（skeleton_similarity / reference_bank / clip_length_prior）只比较 body plan，不看 variant；
 
-- 要求 checkpoint 以 `--species_cond` 训练；
 - 组合必须在 checkpoint 的描述符表里；
 - 与 `--object_type all` 不兼容；
 - 骨架不在 checkpoint 的 `cond.npy` 里的新骨架（`process_new_skeleton`）必须显式给 `--species_tags`，没有静默回退到某个默认物种。
@@ -120,7 +119,7 @@ variant 的取舍按物种而定，不按 clip 中有没有表现出来：一个
 
 ## 4. species 对关节名的 per-joint FiLM
 
-开关：`--species_cond`（`train_diffusion_full.bat` 开启）。
+始终开启，没有开关。
 
 ### 4.1 结构
 
@@ -143,7 +142,7 @@ name_vec  = text_embedding( modulated )                                  # Linea
 
 ### 4.2 激活规则
 
-启用 `--species_cond` 时，species FiLM 在所有训练和推理行上开启，没有自己的 CFG drop 或 null 模式。
+species FiLM 在所有训练和推理行上开启，没有自己的 CFG drop 或 null 模式。
 推理的 `--species_tags` 可覆盖描述符，包括 img2img 编辑。
 
 ### 4.3 species 通路的作用边界
@@ -174,7 +173,7 @@ variant 在数据里是按物种打的，与骨架高度相关（例如所有 Fl
 
 1. 取 `joints_names_embs` 行；按 `joint_name_drop_prob` 决定整行是否清零。
 2. 复制一份作 FiLM 输入（`joints_clean`）；另一份做逐元素 dropout。
-3. 若 `species_cond`：用 `concat[joints_clean, species_code]` 算 gamma / beta，调制 dropout 后的名字。
+3. 用 `concat[joints_clean, species_code]` 算 gamma / beta，调制 dropout 后的名字。
 4. `text_embedding` 把名字向量投到 `latent_dim`，加到该关节的运动 token 上。
 5. 加结构通道（padding 行清零后）与帧位置编码。
 

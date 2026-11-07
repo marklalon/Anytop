@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     JOINT_BUCKETS,
     MAX_JOINTS,
 )
+from data_loaders.truebones.truebones_utils.dataset_tags import species_code_dim  # noqa: E402
 from model.motion_diffusion import MotionDiffusion  # noqa: E402
 
 
@@ -188,6 +189,7 @@ def _item(n_joints, max_joints, frames=3, seed=0):
         'clip',
         {
             'joint_struct': rng.standard_normal((n_joints, JOINT_STRUCT_DIM)).astype(np.float32),
+            'species_code': np.zeros(species_code_dim(T5), dtype=np.float32),
             'canonical_feature_mean': np.zeros(FEATS, dtype=np.float32),
             'canonical_feature_std': np.ones(FEATS, dtype=np.float32),
         },

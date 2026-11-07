@@ -71,9 +71,8 @@ class GenerationIgnoresTrainingGroup(unittest.TestCase):
 
     def test_action_condition_contains_only_label_and_slots(self):
         from sample.conditioning import _resolve_action_condition
-        model = SimpleNamespace(action_label_cond=True)
         condition = _resolve_action_condition(
-            SimpleNamespace(action_label='fly, forward', action_group='stationary'), model)
+            SimpleNamespace(action_label='fly, forward', action_group='stationary'))
         self.assertEqual(set(condition), {'action_label', 'action_slots'})
         self.assertEqual(condition['action_label'], 'fly, forward')
 

@@ -107,7 +107,7 @@ output projection（全部关节共用）
 ### 3.2 关节名称
 
 T5 编码发生在预处理阶段，模型不会在每次 forward 中运行 T5。`cond.npy` 携带
-`joints_names_embs`；启用 `species_cond` 时，先经过第 4.1 节的 per-joint FiLM，
+`joints_names_embs`；先经过第 4.1 节的 per-joint FiLM，
 再由 `InputProcess.text_embedding` 投影到 latent width，并沿全部时间位置加到对应关节 token。
 
 `joint_name_drop_prob>0` 时，训练会把整个关节名称向量置零（与 padding 行同为全零，
@@ -148,7 +148,7 @@ timestep
 
 | 通路 | 输入 | 作用位置 | drop 语义 |
 |---|---|---|---|
-| `species_cond` | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 所有行开启；无随机 drop |
+| species FiLM | `[joint_name || species_code]` → bottleneck | 每个 joint-name embedding 的 FiLM | 所有行开启；无随机 drop |
 
 Species code 只通过这条输入层通路调制关节名，不进入 timestep condition bus。
 `species_code = [T5(body plan) || variant 轴]`（`species_descriptor_table.species_code`）；
@@ -240,7 +240,7 @@ x + embedded timestep/conditions
   → [action AdaLN on the branch input] → FFN + residual + norm
 ```
 
-方括号里的 AdaLN 只在 `--action_label_cond` 下存在（见 §4.2）。
+方括号里的 action AdaLN 见 §4.2。
 
 该层沿用了 `nn.TransformerDecoderLayer` 的外形，但不含 encoder-decoder memory attention：
 基类的 `self_attn` 换成 graph/temporal 两条路径，`multihead_attn` 已删除。
