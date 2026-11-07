@@ -319,12 +319,11 @@ def test_asymmetric_latent_readers_support_fullgraph_training():
 def test_independent_widths_and_ff_sizes_roundtrip(encoder_width, decoder_width):
     model, x, skeleton = fixture(
         encoder_width=encoder_width, decoder_width=decoder_width,
-        encoder_ff_size=20, decoder_ff_size=40, last_layer_ff=12,
+        encoder_ff_size=20, decoder_ff_size=40,
         decoder_layers=2, variational=True, layerwise_latent=True,
     )
     assert model.encoder.layers[0].linear1.out_features == 20
     assert model.decoder.layers[0].linear1.out_features == 40
-    assert model.decoder.layers[-1].linear1.out_features == 12
     frame = torch.tensor([[True] * 5, [True] * 3 + [False] * 2])
     metadata = dict(is_loop=torch.tensor([False, True]), loop_tile_count=torch.ones(2))
     prediction, mu, logvar = model(x, skeleton, frame, metadata, return_posterior=True)
@@ -460,7 +459,7 @@ def test_complete_channels_latent_and_gradients(joints, frames):
 @pytest.mark.parametrize('loop', [False, True])
 @pytest.mark.parametrize('attention', [False, True])
 def test_joint_and_time_padding_do_not_change_valid_output(loop, attention):
-    options = dict(layerwise_latent=True, ff_size=32, last_layer_ff=16) if attention else {}
+    options = dict(layerwise_latent=True, ff_size=32) if attention else {}
     model, x, s = fixture(**options)
     frame = torch.ones(2, 5, dtype=torch.bool)
     metadata = dict(is_loop=torch.full((2,), loop), loop_tile_count=torch.ones(2))

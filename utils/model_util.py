@@ -224,7 +224,6 @@ def get_gmdm_args(args):
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'max_joints': max_joints, 
             'feature_len':feature_len,  'value_emb': args.value_emb,
-            'last_layer_ff': getattr(args, 'last_layer_ff', 0),
             'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
             'rest_geom_joint_drop_prob': getattr(args, 'rest_geom_joint_drop_prob', 0.1),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),

@@ -42,7 +42,7 @@ class MotionAutoencoder(nn.Module):
     """
 
     def __init__(self, t5_out_dim, width=128, layers=2, heads=4, slots=8, latent_dim=32,
-                 ff_size=0, last_layer_ff=0,
+                 ff_size=0,
                  layerwise_latent=False, variational=False,
                  dropout_prob=0.0,
                  encoder_layers=None, decoder_layers=None,
@@ -66,7 +66,7 @@ class MotionAutoencoder(nn.Module):
                            encoder_width=encoder_width, decoder_width=decoder_width,
                            encoder_ff_size=encoder_ff_size, decoder_ff_size=decoder_ff_size,
                            heads=heads, slots=slots, latent_dim=latent_dim,
-                           ff_size=ff_size, last_layer_ff=last_layer_ff,
+                           ff_size=ff_size,
                            layerwise_latent=layerwise_latent,
                            variational=variational, dropout_prob=dropout_prob)
         if not 0 <= dropout_prob <= 1:
@@ -89,8 +89,7 @@ class MotionAutoencoder(nn.Module):
             return GraphMotionDecoder(
                 GraphMotionDecoderLayer(width, heads, ff_size or width * 4, dropout_prob, 'gelu'),
                 decoder_layers if decoder else encoder_layers,
-                graph_relations=True,
-                last_layer_ff=last_layer_ff if decoder else 0)
+                graph_relations=True)
 
         self.encoder = trunk()
         self.decoder = trunk(decoder=True)

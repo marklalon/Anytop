@@ -51,7 +51,6 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
         self.input_feats = len(MODEL_CHANNELS)
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.value_emb=kargs.get('value_emb', False)
-        self.last_layer_ff=int(kargs.get('last_layer_ff', 0))
         # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
         self.joint_name_drop_prob=float(kargs.get('joint_name_drop_prob', 0.0))
@@ -135,8 +134,7 @@ class MotionDiffusion(MotionConditioningMixin, nn.Module):
                                                             activation=self.activation)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb,
-                                                        action_label_adaln=True,
-                                                        last_layer_ff=self.last_layer_ff)
+                                                        action_label_adaln=True)
             
         
         self.output_process = OutputProcess(

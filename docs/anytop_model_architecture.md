@@ -400,8 +400,8 @@ M 大于窗口时插值不可逆，仍用线性插值。
 
 ## 11. 宽度分配与设计依据
 
-参数预算由训练配置（`train_diffusion_full.bat`）决定：主干宽度、FFN 宽度、层数、
-`last_layer_ff`。action AdaLN 和 species FiLM 的隐藏宽度均固定为 `latent_dim`。冻结的 T5 词表以 buffer 形式保存，
+参数预算由训练配置（`train_diffusion_full.bat`）决定：主干宽度、FFN 宽度、层数。
+action AdaLN 和 species FiLM 的隐藏宽度均固定为 `latent_dim`。冻结的 T5 词表以 buffer 形式保存，
 不计入可训练参数。训练启动时会打印各模块的参数量。
 
 参数主要分布在以下模块：decoder 主干（占绝大部分）、`action_adaln` 头、
@@ -412,7 +412,5 @@ M 大于窗口时插值不可逆，仍用线性插值。
 
 - **中间层是饱和的**：中间层 FFN 的隐单元几乎全部参与，注意力 q/k/v/o 的有效秩接近满宽。
   宽度没有余量，因此主干保持全宽。
-- **末层 FFN 坍缩**：末层 FFN 的单元增益远低于其它层，大量隐单元不参与。末层之后只有
-  `LayerNorm → Linear` 的线性读出，不需要全宽 FFN，因此用 `last_layer_ff` 收窄。
 - **`action_label_projection` 只读紧凑通道**：direction 槽的正交码只占少数几个轴，其余列的输入
   恒为 0，是结构性死参数；投影只读 `compact_slot_channels`，不读完整槽宽。

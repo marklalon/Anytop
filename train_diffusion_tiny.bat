@@ -41,7 +41,6 @@ REM Edit configs/sample_filters/tiny.json to combine or exclude training clips.
     --noise_schedule_shift 2 ^
     --latent_dim 256 ^
     --ff_size 1024 ^
-    --last_layer_ff 256 ^
     --layers 8 ^
     --rest_repose_prob 0.1 ^
     --rest_variant_prob 0.5 ^

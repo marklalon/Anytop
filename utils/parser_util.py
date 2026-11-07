@@ -211,11 +211,6 @@ def add_model_options(parser):
                        help="Feed-forward hidden dimension in each decoder layer. "
                             "Controls the bottleneck size of the two-layer FFN "
                             "inside each GraphMotionDecoderLayer.")
-    group.add_argument("--last_layer_ff", default=0, type=int,
-                       help="Feed-forward hidden width of the LAST decoder layer only "
-                            "(0 = same as --ff_size). That layer feeds a single linear "
-                            "readout, and in a full run ~3/4 of its FFN units went dead; "
-                            "512 recovers those parameters for the trunk.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_drot", default=0.0, type=float,
                        help="Weight of target-relative global rotation-step loss: R[t]^T R[t+1], "

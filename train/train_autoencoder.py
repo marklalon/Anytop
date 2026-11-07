@@ -379,7 +379,6 @@ def parser():
                    help='Encoder FF size; defaults to --ff_size; zero uses 4 * encoder width')
     p.add_argument('--decoder_ff_size', type=int, default=None,
                    help='Decoder FF size; defaults to --ff_size; zero uses 4 * decoder width')
-    p.add_argument('--last_layer_ff', type=int, default=0)
     p.add_argument('--compile', choices=('None', 'default', 'reduce-overhead'), default='None')
     p.add_argument('--variational', action='store_true')
     p.add_argument('--kl_weight', type=float, default=0.0,
@@ -487,8 +486,6 @@ def main():
         for key in (*LOSS_WEIGHTS.values(), 'drot_joint_boost', 'warmup_steps'):
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run for a new objective')
-        if resume['args']['last_layer_ff'] != args.last_layer_ff:
-            raise ValueError('Cannot resume with changed last_layer_ff; use a new run')
         for key in AUGMENTATION_DEFAULTS | MODEL_REGULARIZATION_DEFAULTS:
             if resume['args'][key] != getattr(args, key):
                 raise ValueError(f'Cannot resume with changed {key}; use a new run')
@@ -512,7 +509,6 @@ def main():
                               encoder_ff_size=args.encoder_ff_size, decoder_ff_size=args.decoder_ff_size,
                               encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers,
                               latent_dim=args.latent_dim, ff_size=args.ff_size,
-                              last_layer_ff=args.last_layer_ff,
                               layerwise_latent=True,
                               variational=args.variational,
                               **{key: getattr(args, key) for key in MODEL_REGULARIZATION_DEFAULTS}).to(device)

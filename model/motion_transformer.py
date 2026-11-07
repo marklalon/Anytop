@@ -862,7 +862,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None,
                  num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_EMBEDDINGS,
                  value_emb=False, action_label_adaln=False,
-                 last_layer_ff=0,
                  graph_relations=True):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
@@ -874,27 +873,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 
         self.d_model = decoder_layer.d_model
         self.nheads = decoder_layer.heads
-        # --last_layer_ff: a narrower feed-forward in the LAST layer only. That
-        # layer's output goes through norm3 straight into OutputProcess, a
-        # single Linear(d_model -> 12) per joint, so its FFN only has to shape
-        # a ~12-dim-readable signal: in a full 400k-step run three quarters of
-        # its 2048 hidden units decayed to a gain 50x below the other layers'
-        # (participation ratio 464/2048 against ~1950 elsewhere), and the
-        # collapse was progressive. The parameters are better spent on width.
-        # 0 keeps dim_feedforward everywhere (old behaviour, bit-identical).
-        self.last_layer_ff = int(last_layer_ff)
-        if self.last_layer_ff < 0:
-            raise ValueError(f"last_layer_ff must be >= 0, got {last_layer_ff}")
-        if self.last_layer_ff and self.last_layer_ff != decoder_layer.linear1.out_features:
-            # A fresh layer of the narrower width in the clone's place. It draws
-            # its own init RNG, so a seeded with/without comparison has to copy
-            # weights rather than trust the seed (same caveat as action_adaln).
-            self.layers[-1] = type(decoder_layer)(
-                d_model=self.d_model, nhead=self.nheads,
-                dim_feedforward=self.last_layer_ff,
-                dropout=decoder_layer.dropout1.p,
-                activation=decoder_layer.activation,
-            )
         # Table sizes come from ``topology_relations`` rather than being written
         # here: the dataset emits those indices, and a mismatch surfaces only as an
         # out-of-bounds gather deep inside the attention bias.
